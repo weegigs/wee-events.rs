@@ -1,0 +1,17 @@
+[package]
+name = "wee-events-macros"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+# TODO: set public repository/homepage/documentation URLs before publishing.
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
+convert_case = "0.7"
