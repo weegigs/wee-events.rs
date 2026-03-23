@@ -1,0 +1,22 @@
+[package]
+name = "wee-events"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+# TODO: set public repository/homepage/documentation URLs before publishing.
+
+[features]
+testing = []
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+ulid = { version = "1", features = ["serde"] }
+wee-events-macros = { path = "../wee-events-macros" }
+
+[dev-dependencies]
+wee-events = { path = ".", features = ["testing"] }
+tokio = { workspace = true }
