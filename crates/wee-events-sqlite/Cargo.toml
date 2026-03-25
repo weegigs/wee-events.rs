@@ -9,7 +9,7 @@ readme.workspace = true
 
 [dependencies]
 wee-events = { path = "../wee-events" }
-rusqlite = { version = "0.33", features = ["bundled"] }
+libsql = { version = "0.9.30", default-features = false, features = ["core"] }
 ulid = { version = "1", features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
