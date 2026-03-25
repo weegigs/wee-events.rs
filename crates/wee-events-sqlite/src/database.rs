@@ -5,7 +5,8 @@ use libsql::{Builder, Connection};
 
 use crate::Error;
 
-const SCHEMA_VERSION: u32 = 2;
+const EVENT_STORE_SCHEMA_VERSION: u32 = 1;
+const DOCUMENT_STORE_SCHEMA_VERSION: u32 = 1;
 
 const EVENTS_DDL: &str = "
 CREATE TABLE IF NOT EXISTS events (
@@ -35,17 +36,39 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 ";
 
-pub(crate) async fn open_local_connection(path: impl AsRef<Path>) -> Result<Connection, Error> {
+pub(crate) async fn open_event_store_local_connection(
+    path: impl AsRef<Path>,
+) -> Result<Connection, Error> {
     let db = Builder::new_local(path).build().await?;
     let conn = db.connect()?;
     prepare_connection(&conn).await?;
+    migrate_event_store(&conn).await?;
     Ok(conn)
 }
 
-pub(crate) async fn open_in_memory_connection() -> Result<Connection, Error> {
+pub(crate) async fn open_event_store_in_memory_connection() -> Result<Connection, Error> {
     let db = Builder::new_local(":memory:").build().await?;
     let conn = db.connect()?;
     prepare_connection(&conn).await?;
+    migrate_event_store(&conn).await?;
+    Ok(conn)
+}
+
+pub(crate) async fn open_document_store_local_connection(
+    path: impl AsRef<Path>,
+) -> Result<Connection, Error> {
+    let db = Builder::new_local(path).build().await?;
+    let conn = db.connect()?;
+    prepare_connection(&conn).await?;
+    migrate_document_store(&conn).await?;
+    Ok(conn)
+}
+
+pub(crate) async fn open_document_store_in_memory_connection() -> Result<Connection, Error> {
+    let db = Builder::new_local(":memory:").build().await?;
+    let conn = db.connect()?;
+    prepare_connection(&conn).await?;
+    migrate_document_store(&conn).await?;
     Ok(conn)
 }
 
@@ -62,30 +85,59 @@ async fn prepare_connection(conn: &Connection) -> Result<(), Error> {
 
     conn.busy_timeout(Duration::from_millis(5000))?;
     conn.execute_batch("PRAGMA foreign_keys=ON;").await?;
-    migrate(conn).await?;
     Ok(())
 }
 
-async fn migrate(conn: &Connection) -> Result<(), Error> {
-    let current = query_required_u32(conn, "PRAGMA user_version").await?;
+async fn migrate_event_store(conn: &Connection) -> Result<(), Error> {
+    migrate_schema(
+        conn,
+        "_wee_events_event_store_user_version",
+        EVENT_STORE_SCHEMA_VERSION,
+        &[(1, EVENTS_DDL)],
+    )
+    .await
+}
 
-    if current >= SCHEMA_VERSION {
+async fn migrate_document_store(conn: &Connection) -> Result<(), Error> {
+    migrate_schema(
+        conn,
+        "_wee_events_document_store_user_version",
+        DOCUMENT_STORE_SCHEMA_VERSION,
+        &[(1, DOCUMENTS_DDL)],
+    )
+    .await
+}
+
+async fn migrate_schema(
+    conn: &Connection,
+    version_key: &str,
+    target_version: u32,
+    migrations: &[(u32, &str)],
+) -> Result<(), Error> {
+    let current = current_schema_version(conn, version_key).await?;
+
+    if current >= target_version {
         return Ok(());
     }
 
     let mut ddl = String::new();
-
-    if current < 1 {
-        ddl.push_str(EVENTS_DDL);
-    }
-    if current < 2 {
-        ddl.push_str(DOCUMENTS_DDL);
+    for (version, migration) in migrations {
+        if current < *version {
+            ddl.push_str(migration);
+        }
     }
 
+    let version = target_version.to_string();
     conn.execute_batch(&format!(
         "BEGIN;
+         CREATE TABLE IF NOT EXISTS _wee_events_schema_versions (
+             schema_name TEXT PRIMARY KEY,
+             version     INTEGER NOT NULL
+         );
          {ddl}
-         PRAGMA user_version = {SCHEMA_VERSION};
+         INSERT INTO _wee_events_schema_versions (schema_name, version)
+         VALUES ('{version_key}', {version})
+         ON CONFLICT(schema_name) DO UPDATE SET version = excluded.version;
          COMMIT;"
     ))
     .await?;
@@ -93,18 +145,29 @@ async fn migrate(conn: &Connection) -> Result<(), Error> {
     Ok(())
 }
 
-async fn query_required_string(conn: &Connection, sql: &str) -> Result<String, Error> {
-    let mut rows = conn.query(sql, ()).await?;
+async fn current_schema_version(conn: &Connection, version_key: &str) -> Result<u32, Error> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS _wee_events_schema_versions (
+             schema_name TEXT PRIMARY KEY,
+             version     INTEGER NOT NULL
+         );",
+    )
+    .await?;
+
+    let mut rows = conn
+        .query(
+            "SELECT version FROM _wee_events_schema_versions WHERE schema_name = ?1",
+            [version_key],
+        )
+        .await?;
     let Some(row) = rows.next().await? else {
-        return Err(Error::Configuration(format!(
-            "expected row when querying pragma: {sql}"
-        )));
+        return Ok(0);
     };
 
     row.get(0).map_err(Into::into)
 }
 
-async fn query_required_u32(conn: &Connection, sql: &str) -> Result<u32, Error> {
+async fn query_required_string(conn: &Connection, sql: &str) -> Result<String, Error> {
     let mut rows = conn.query(sql, ()).await?;
     let Some(row) = rows.next().await? else {
         return Err(Error::Configuration(format!(

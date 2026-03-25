@@ -24,14 +24,14 @@ impl DocumentStore {
     /// Opens (or creates) the database at `path`.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         Ok(Self {
-            conn: Mutex::new(database::open_local_connection(path).await?),
+            conn: Mutex::new(database::open_document_store_local_connection(path).await?),
         })
     }
 
     /// Opens an in-memory database. Useful for testing.
     pub async fn open_in_memory() -> Result<Self, Error> {
         Ok(Self {
-            conn: Mutex::new(database::open_in_memory_connection().await?),
+            conn: Mutex::new(database::open_document_store_in_memory_connection().await?),
         })
     }
 

@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use libsql::Builder;
 use serde::{Deserialize, Serialize};
 use wee_events::{
     AggregateId, AggregateType, EventData, EventStore, EventType, PublishOptions, RawEvent,
@@ -12,20 +13,27 @@ async fn test_document_store() -> DocumentStore {
 }
 
 struct SharedStores {
-    db_path: PathBuf,
+    event_db_path: PathBuf,
+    document_db_path: PathBuf,
     event_store: SqliteEventStore,
     document_store: DocumentStore,
 }
 
 impl SharedStores {
     async fn new() -> Self {
-        let db_path =
-            std::env::temp_dir().join(format!("wee-events-sqlite-{}.db", ulid::Ulid::new()));
-        let event_store = SqliteEventStore::open(&db_path).await.unwrap();
-        let document_store = DocumentStore::open(&db_path).await.unwrap();
+        let temp_dir = std::env::temp_dir();
+        let event_db_path =
+            temp_dir.join(format!("wee-events-sqlite-events-{}.db", ulid::Ulid::new()));
+        let document_db_path = temp_dir.join(format!(
+            "wee-events-sqlite-documents-{}.db",
+            ulid::Ulid::new()
+        ));
+        let event_store = SqliteEventStore::open(&event_db_path).await.unwrap();
+        let document_store = DocumentStore::open(&document_db_path).await.unwrap();
 
         Self {
-            db_path,
+            event_db_path,
+            document_db_path,
             event_store,
             document_store,
         }
@@ -34,7 +42,8 @@ impl SharedStores {
 
 impl Drop for SharedStores {
     fn drop(&mut self) {
-        remove_db_artifacts(&self.db_path);
+        remove_db_artifacts(&self.event_db_path);
+        remove_db_artifacts(&self.document_db_path);
     }
 }
 
@@ -43,6 +52,20 @@ fn remove_db_artifacts(db_path: &Path) {
     for suffix in ["", "-shm", "-wal"] {
         let _ = std::fs::remove_file(format!("{db_path}{suffix}"));
     }
+}
+
+async fn table_exists(db_path: &Path, table_name: &str) -> bool {
+    let db = Builder::new_local(db_path).build().await.unwrap();
+    let conn = db.connect().unwrap();
+    let mut rows = conn
+        .query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table_name],
+        )
+        .await
+        .unwrap();
+
+    rows.next().await.unwrap().is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +256,34 @@ async fn json_valid_constraint_accepts_valid_json() {
 
     let doc = store.get("test", "valid").await.unwrap();
     assert!(doc.is_some());
+}
+
+#[tokio::test]
+async fn event_store_open_only_creates_event_schema() {
+    let db_path = std::env::temp_dir().join(format!(
+        "wee-events-sqlite-events-only-{}.db",
+        ulid::Ulid::new()
+    ));
+    let _store = SqliteEventStore::open(&db_path).await.unwrap();
+
+    assert!(table_exists(&db_path, "events").await);
+    assert!(!table_exists(&db_path, "documents").await);
+
+    remove_db_artifacts(&db_path);
+}
+
+#[tokio::test]
+async fn document_store_open_only_creates_document_schema() {
+    let db_path = std::env::temp_dir().join(format!(
+        "wee-events-sqlite-documents-only-{}.db",
+        ulid::Ulid::new()
+    ));
+    let _store = DocumentStore::open(&db_path).await.unwrap();
+
+    assert!(table_exists(&db_path, "documents").await);
+    assert!(!table_exists(&db_path, "events").await);
+
+    remove_db_artifacts(&db_path);
 }
 
 // ---------------------------------------------------------------------------
