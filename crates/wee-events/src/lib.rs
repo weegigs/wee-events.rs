@@ -9,7 +9,7 @@ mod renderer;
 mod store;
 
 #[cfg(any(test, feature = "testing"))]
-pub mod test_suite;
+mod test_suite;
 
 pub use aggregate::Aggregate;
 pub use command::Command;
@@ -20,10 +20,19 @@ pub use id::{
     AggregateId, AggregateIdParseError, AggregateType, CommandName, CorrelationId, EventId,
     EventType, Revision,
 };
-pub use memory_store::MemoryStore;
 pub use renderer::{ReduceFn, Renderer};
 pub use store::{EventStore, PublishOptions, RawEvent};
 pub use wee_events_macros::{Command, DomainEvent};
+
+pub mod memory {
+    pub use crate::memory_store::MemoryStore;
+}
+
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    pub use crate::store_test_suite;
+    pub use crate::test_suite::*;
+}
 
 pub type Result<T> = std::result::Result<T, Error>;
 

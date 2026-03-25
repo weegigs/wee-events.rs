@@ -210,13 +210,15 @@ impl SqliteEventStore {
             let revision = self.generate_ulid()?;
             let changes = execute_publish_statement(
                 &tx,
-                index,
-                aggregate_id,
-                options,
-                raw,
-                &metadata,
-                &event_id,
-                &revision,
+                PublishRow {
+                    index,
+                    aggregate_id,
+                    options,
+                    raw,
+                    metadata: &metadata,
+                    event_id: &event_id,
+                    revision: &revision,
+                },
             )
             .await?;
 
@@ -311,30 +313,34 @@ const EXACT_SQL: &str =
      AND (SELECT MAX(revision) FROM events
           WHERE aggregate_type = ?2 AND aggregate_key = ?3) = ?10";
 
+struct PublishRow<'a> {
+    index: usize,
+    aggregate_id: &'a AggregateId,
+    options: &'a PublishOptions,
+    raw: &'a RawEvent,
+    metadata: &'a EventMetadata,
+    event_id: &'a EventId,
+    revision: &'a str,
+}
+
 async fn execute_publish_statement(
     tx: &libsql::Transaction,
-    index: usize,
-    aggregate_id: &AggregateId,
-    options: &PublishOptions,
-    raw: &RawEvent,
-    metadata: &EventMetadata,
-    event_id: &EventId,
-    revision: &str,
+    row: PublishRow<'_>,
 ) -> Result<u64, Error> {
-    match (index, &options.expected_revision) {
+    match (row.index, &row.options.expected_revision) {
         (0, Some(expected)) if expected.is_zero() => tx
             .execute(
                 INITIAL_SQL,
                 libsql::params![
-                    event_id.as_str(),
-                    aggregate_id.aggregate_type.as_str(),
-                    aggregate_id.aggregate_key.as_str(),
-                    raw.event_type.as_str(),
-                    revision,
-                    metadata.causation_id.as_ref().map(|id| id.as_str()),
-                    metadata.correlation_id.as_ref().map(|id| id.as_str()),
-                    raw.data.encoding.as_str(),
-                    raw.data.data.clone(),
+                    row.event_id.as_str(),
+                    row.aggregate_id.aggregate_type.as_str(),
+                    row.aggregate_id.aggregate_key.as_str(),
+                    row.raw.event_type.as_str(),
+                    row.revision,
+                    row.metadata.causation_id.as_ref().map(|id| id.as_str()),
+                    row.metadata.correlation_id.as_ref().map(|id| id.as_str()),
+                    row.raw.data.encoding.as_str(),
+                    row.raw.data.data.clone(),
                 ],
             )
             .await
@@ -343,15 +349,15 @@ async fn execute_publish_statement(
             .execute(
                 EXACT_SQL,
                 libsql::params![
-                    event_id.as_str(),
-                    aggregate_id.aggregate_type.as_str(),
-                    aggregate_id.aggregate_key.as_str(),
-                    raw.event_type.as_str(),
-                    revision,
-                    metadata.causation_id.as_ref().map(|id| id.as_str()),
-                    metadata.correlation_id.as_ref().map(|id| id.as_str()),
-                    raw.data.encoding.as_str(),
-                    raw.data.data.clone(),
+                    row.event_id.as_str(),
+                    row.aggregate_id.aggregate_type.as_str(),
+                    row.aggregate_id.aggregate_key.as_str(),
+                    row.raw.event_type.as_str(),
+                    row.revision,
+                    row.metadata.causation_id.as_ref().map(|id| id.as_str()),
+                    row.metadata.correlation_id.as_ref().map(|id| id.as_str()),
+                    row.raw.data.encoding.as_str(),
+                    row.raw.data.data.clone(),
                     expected.as_str(),
                 ],
             )
@@ -361,15 +367,15 @@ async fn execute_publish_statement(
             .execute(
                 ADVANCE_SQL,
                 libsql::params![
-                    event_id.as_str(),
-                    aggregate_id.aggregate_type.as_str(),
-                    aggregate_id.aggregate_key.as_str(),
-                    raw.event_type.as_str(),
-                    revision,
-                    metadata.causation_id.as_ref().map(|id| id.as_str()),
-                    metadata.correlation_id.as_ref().map(|id| id.as_str()),
-                    raw.data.encoding.as_str(),
-                    raw.data.data.clone(),
+                    row.event_id.as_str(),
+                    row.aggregate_id.aggregate_type.as_str(),
+                    row.aggregate_id.aggregate_key.as_str(),
+                    row.raw.event_type.as_str(),
+                    row.revision,
+                    row.metadata.causation_id.as_ref().map(|id| id.as_str()),
+                    row.metadata.correlation_id.as_ref().map(|id| id.as_str()),
+                    row.raw.data.encoding.as_str(),
+                    row.raw.data.data.clone(),
                 ],
             )
             .await

@@ -3,8 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 use wee_events::{
-    AggregateId, Command, DomainEvent, Entity, EventData, EventStore, EventType, MemoryStore,
-    PublishOptions, Renderer,
+    memory::MemoryStore, AggregateId, Command, DomainEvent, Entity, EventData, EventStore,
+    EventType, PublishOptions, Renderer,
 };
 
 // ---------------------------------------------------------------------------

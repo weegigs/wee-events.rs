@@ -6,8 +6,8 @@
 //! # Usage
 //!
 //! ```text
-//! wee_events::store_test_suite!(memory_store_suite, || {
-//!     wee_events::MemoryStore::new()
+//! wee_events::testing::store_test_suite!(memory_store_suite, || {
+//!     wee_events::memory::MemoryStore::new()
 //! });
 //! ```
 
@@ -430,7 +430,7 @@ pub async fn event_ordering_preserved(store: &impl EventStore) {
 /// # Usage
 ///
 /// ```text
-/// wee_events::store_test_suite!(my_suite, || {
+/// wee_events::testing::store_test_suite!(my_suite, || {
 ///     MyStore::new()
 /// });
 /// ```
@@ -443,79 +443,79 @@ macro_rules! store_test_suite {
             #[tokio::test]
             async fn load_initial() {
                 let store = $factory;
-                $crate::test_suite::load_initial(&store).await;
+                $crate::testing::load_initial(&store).await;
             }
 
             #[tokio::test]
             async fn loads_revision_with_events() {
                 let store = $factory;
-                $crate::test_suite::loads_revision_with_events(&store).await;
+                $crate::testing::loads_revision_with_events(&store).await;
             }
 
             #[tokio::test]
             async fn publishes_single_event() {
                 let store = $factory;
-                $crate::test_suite::publishes_single_event(&store).await;
+                $crate::testing::publishes_single_event(&store).await;
             }
 
             #[tokio::test]
             async fn publishes_multiple_events() {
                 let store = $factory;
-                $crate::test_suite::publishes_multiple_events(&store).await;
+                $crate::testing::publishes_multiple_events(&store).await;
             }
 
             #[tokio::test]
             async fn validate_event_content() {
                 let store = $factory;
-                $crate::test_suite::validate_event_content(&store).await;
+                $crate::testing::validate_event_content(&store).await;
             }
 
             #[tokio::test]
             async fn publishes_with_expected_initial_revision() {
                 let store = $factory;
-                $crate::test_suite::publishes_with_expected_initial_revision(&store).await;
+                $crate::testing::publishes_with_expected_initial_revision(&store).await;
             }
 
             #[tokio::test]
             async fn publishes_with_expected_revision() {
                 let store = $factory;
-                $crate::test_suite::publishes_with_expected_revision(&store).await;
+                $crate::testing::publishes_with_expected_revision(&store).await;
             }
 
             #[tokio::test]
             async fn revision_conflict_on_initial_revision() {
                 let store = $factory;
-                $crate::test_suite::revision_conflict_on_initial_revision(&store).await;
+                $crate::testing::revision_conflict_on_initial_revision(&store).await;
             }
 
             #[tokio::test]
             async fn revision_conflict_on_subsequent_revision() {
                 let store = $factory;
-                $crate::test_suite::revision_conflict_on_subsequent_revision(&store).await;
+                $crate::testing::revision_conflict_on_subsequent_revision(&store).await;
             }
 
             #[tokio::test]
             async fn causation() {
                 let store = $factory;
-                $crate::test_suite::causation(&store).await;
+                $crate::testing::causation(&store).await;
             }
 
             #[tokio::test]
             async fn stale_revision_detected_and_retry_succeeds() {
                 let store = $factory;
-                $crate::test_suite::stale_revision_detected_and_retry_succeeds(&store).await;
+                $crate::testing::stale_revision_detected_and_retry_succeeds(&store).await;
             }
 
             #[tokio::test]
             async fn empty_publish_returns_current_revision() {
                 let store = $factory;
-                $crate::test_suite::empty_publish_returns_current_revision(&store).await;
+                $crate::testing::empty_publish_returns_current_revision(&store).await;
             }
 
             #[tokio::test]
             async fn event_ordering_preserved() {
                 let store = $factory;
-                $crate::test_suite::event_ordering_preserved(&store).await;
+                $crate::testing::event_ordering_preserved(&store).await;
             }
         }
     };
