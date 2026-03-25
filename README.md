@@ -1,40 +1,25 @@
 # wee-events
 
-`wee-events` is a small Rust event-sourcing toolkit extracted from a larger
-application so it can live as a reusable, open-source workspace.
+`wee-events` is a Rust event-sourcing toolkit with a compact core API, derive
+macros for domain modeling, and a libSQL-backed SQLite store for local and
+production-friendly persistence.
 
-It focuses on a compact core API, derive macros for ergonomic domain modeling,
-and a libSQL-backed SQLite store for local and production-friendly persistence.
+It is part of the `wee-events` family alongside the original
+[`wee-events`](https://github.com/weegigs/wee-events) project and
+[`wee-events-go`](https://github.com/weegigs/wee-events-go).
 
-## Getting Started
+## Features
 
-**Prerequisites:** [mise](https://mise.jdx.dev/) is recommended for tool setup.
-
-1. Install the project tools with `mise install`.
-2. Use `just` to run the common workspace tasks.
-
-```sh
-mise exec -- just           # Show available commands
-mise exec -- just quality   # fmt-check, cargo check, clippy, and tests
-mise exec -- just fmt       # Format the workspace
-```
-
-If you prefer to run Cargo directly, use the same commands through `mise exec --`.
-
-## Key Features
-
-- **Small event-sourcing core**: aggregate, event, command, renderer, and store primitives.
+- **Compact event-sourcing core**: aggregate, event, command, renderer, and store primitives.
 - **Typed identifiers**: dedicated types for aggregate IDs, event IDs, revisions, and names.
 - **Derive macros**: `Command` and `DomainEvent` derives generate consistent names from enums.
 - **In-memory store**: useful for tests and lightweight workflows.
-- **SQLite store**: append-only event persistence with separate event/document stores and projection helpers.
-- **Workspace test support**: shared store conformance tests for event store implementations.
+- **SQLite store**: append-only event persistence with document storage and projection helpers.
+- **Store conformance tests**: shared test support for event store implementations.
 
-## Workspace Layout
+## Crates
 
-This repository contains:
-
-- `crates/wee-events`: core event-sourcing types, traits, renderer support, and an in-memory store
+- `crates/wee-events`: core types, traits, renderer support, and an in-memory store
 - `crates/wee-events-macros`: derive macros for `Command` and `DomainEvent`
 - `crates/wee-events-sqlite`: a libSQL-backed SQLite event store plus document and projection helpers
 
@@ -47,21 +32,20 @@ crates/
 
 ## Development
 
-The workspace includes a root `justfile` for the standard quality checks:
+[mise](https://mise.jdx.dev/) is recommended for tool setup.
 
 ```sh
-mise exec -- just quality
+mise install
+mise exec -- just         # Show available commands
+mise exec -- just check   # fmt-check, cargo check, clippy, and tests
+mise exec -- just fmt     # Format the workspace
 ```
 
-That recipe runs:
+If you prefer to run Cargo directly, use the same commands through `mise exec --`.
+
+The `check` recipe runs:
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets --all-features`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - `cargo test --workspace --all-features`
-
-## Status
-
-The workspace builds and passes its quality checks as a standalone Rust project.
-Before making the repository public, fill in package metadata such as
-`repository`, `homepage`, and `documentation` with the final public URLs.
