@@ -8,7 +8,7 @@ This mirrors DynamoDB's partition key sharding: the aggregate ID is the partitio
 
 ## Partitioning Strategies
 
-The `SqliteStore` internals (event persistence, document persistence, projections) are identical regardless of how databases are partitioned. Only the open/enumerate surface changes.
+The SQLite internals (event persistence, document persistence, projections) are identical regardless of how databases are partitioned. Only the open/enumerate surface changes.
 
 ### Single Database (current)
 
@@ -91,4 +91,4 @@ The key difference: DynamoDB rebalances partitions automatically as they grow. W
 
 ## Implementation Notes
 
-This is a design-space document, not an implementation plan. The current `SqliteStore` uses a single database. The internal code (`DocumentStore`, `SqliteEventStore`, projection functions) requires no changes to support any partitioning strategy — only the factory's `open` method and `enumerate_aggregates` surface would change.
+This is a design-space document, not an implementation plan. The current stores use a single database file per process. The internal code (`DocumentStore`, `SqliteEventStore`, projection functions) requires no changes to support any partitioning strategy — only the open/enumerate surface would change.

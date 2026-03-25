@@ -4,7 +4,7 @@
 application so it can live as a reusable, open-source workspace.
 
 It focuses on a compact core API, derive macros for ergonomic domain modeling,
-and a SQLite-backed store for local and production-friendly persistence.
+and a libSQL-backed SQLite store for local and production-friendly persistence.
 
 ## Getting Started
 
@@ -27,7 +27,7 @@ If you prefer to run Cargo directly, use the same commands through `mise exec --
 - **Typed identifiers**: dedicated types for aggregate IDs, event IDs, revisions, and names.
 - **Derive macros**: `Command` and `DomainEvent` derives generate consistent names from enums.
 - **In-memory store**: useful for tests and lightweight workflows.
-- **SQLite store**: append-only event persistence with projections and document helpers.
+- **SQLite store**: append-only event persistence with separate event/document stores and projection helpers.
 - **Workspace test support**: shared store conformance tests for event store implementations.
 
 ## Workspace Layout
@@ -36,7 +36,7 @@ This repository contains:
 
 - `crates/wee-events`: core event-sourcing types, traits, renderer support, and an in-memory store
 - `crates/wee-events-macros`: derive macros for `Command` and `DomainEvent`
-- `crates/wee-events-sqlite`: a SQLite-backed event store plus projection and document helpers
+- `crates/wee-events-sqlite`: a libSQL-backed SQLite event store plus document and projection helpers
 
 ```text
 crates/
