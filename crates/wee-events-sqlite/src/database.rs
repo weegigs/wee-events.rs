@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use libsql::{Builder, Connection};
 
-use crate::Error;
+use crate::{event_store::SqliteDatabaseTarget, Error};
 
 const EVENT_STORE_SCHEMA_VERSION: u32 = 1;
 const DOCUMENT_STORE_SCHEMA_VERSION: u32 = 1;
@@ -36,20 +36,43 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 ";
 
-pub(crate) async fn open_event_store_local_connection(
-    path: impl AsRef<Path>,
+pub(crate) async fn open_event_store_connection(
+    target: &SqliteDatabaseTarget,
 ) -> Result<Connection, Error> {
-    let db = Builder::new_local(path).build().await?;
-    let conn = db.connect()?;
-    prepare_connection(&conn).await?;
-    migrate_event_store(&conn).await?;
-    Ok(conn)
-}
+    let conn = match target {
+        SqliteDatabaseTarget::InMemory => {
+            let db = Builder::new_local(":memory:").build().await?;
+            let conn = db.connect()?;
+            prepare_local_connection(&conn).await?;
+            conn
+        }
+        SqliteDatabaseTarget::Local(path) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let db = Builder::new_local(path).build().await?;
+            let conn = db.connect()?;
+            prepare_local_connection(&conn).await?;
+            conn
+        }
+        SqliteDatabaseTarget::Remote {
+            url,
+            auth_token,
+            namespace,
+        } => {
+            let builder = Builder::new_remote(url.clone(), auth_token.clone());
+            let builder = if let Some(namespace) = namespace {
+                builder.namespace(namespace.clone())
+            } else {
+                builder
+            };
+            let db = builder.build().await?;
+            let conn = db.connect()?;
+            prepare_remote_connection(&conn).await?;
+            conn
+        }
+    };
 
-pub(crate) async fn open_event_store_in_memory_connection() -> Result<Connection, Error> {
-    let db = Builder::new_local(":memory:").build().await?;
-    let conn = db.connect()?;
-    prepare_connection(&conn).await?;
     migrate_event_store(&conn).await?;
     Ok(conn)
 }
@@ -59,7 +82,7 @@ pub(crate) async fn open_document_store_local_connection(
 ) -> Result<Connection, Error> {
     let db = Builder::new_local(path).build().await?;
     let conn = db.connect()?;
-    prepare_connection(&conn).await?;
+    prepare_local_connection(&conn).await?;
     migrate_document_store(&conn).await?;
     Ok(conn)
 }
@@ -67,12 +90,12 @@ pub(crate) async fn open_document_store_local_connection(
 pub(crate) async fn open_document_store_in_memory_connection() -> Result<Connection, Error> {
     let db = Builder::new_local(":memory:").build().await?;
     let conn = db.connect()?;
-    prepare_connection(&conn).await?;
+    prepare_local_connection(&conn).await?;
     migrate_document_store(&conn).await?;
     Ok(conn)
 }
 
-async fn prepare_connection(conn: &Connection) -> Result<(), Error> {
+async fn prepare_local_connection(conn: &Connection) -> Result<(), Error> {
     let journal_mode = query_required_string(conn, "PRAGMA journal_mode").await?;
     if journal_mode != "memory" {
         let confirmed = query_required_string(conn, "PRAGMA journal_mode=WAL").await?;
@@ -85,6 +108,10 @@ async fn prepare_connection(conn: &Connection) -> Result<(), Error> {
 
     conn.busy_timeout(Duration::from_millis(5000))?;
     conn.execute_batch("PRAGMA foreign_keys=ON;").await?;
+    Ok(())
+}
+
+async fn prepare_remote_connection(_conn: &Connection) -> Result<(), Error> {
     Ok(())
 }
 

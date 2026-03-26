@@ -6,7 +6,7 @@ use wee_events::{
     AggregateId, AggregateType, EventData, EventStore, EventType, PublishOptions, RawEvent,
     ReduceFn, Renderer, Revision,
 };
-use wee_events_sqlite::{DocumentStore, SqliteEventStore};
+use wee_events_sqlite::{DocumentStore, SqliteEventStore, SqlitePartitioningStrategy};
 
 async fn test_document_store() -> DocumentStore {
     DocumentStore::open_in_memory().await.unwrap()
@@ -17,6 +17,32 @@ struct SharedStores {
     document_db_path: PathBuf,
     event_store: SqliteEventStore,
     document_store: DocumentStore,
+}
+
+struct PartitionedEventStore {
+    _temp_dir: tempfile::TempDir,
+    store: SqliteEventStore,
+}
+
+impl PartitionedEventStore {
+    async fn new(partitioning: SqlitePartitioningStrategy) -> Self {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = match partitioning {
+            SqlitePartitioningStrategy::Global => {
+                SqliteEventStore::open(temp_dir.path().join("store.db"))
+                    .await
+                    .unwrap()
+            }
+            _ => SqliteEventStore::open_with_partitioning(temp_dir.path(), partitioning)
+                .await
+                .unwrap(),
+        };
+
+        Self {
+            _temp_dir: temp_dir,
+            store,
+        }
+    }
 }
 
 impl SharedStores {
@@ -284,6 +310,73 @@ async fn document_store_open_only_creates_document_schema() {
     assert!(!table_exists(&db_path, "events").await);
 
     remove_db_artifacts(&db_path);
+}
+
+#[tokio::test]
+async fn enumerate_aggregates_works_across_partitioning_strategies() {
+    for partitioning in [
+        SqlitePartitioningStrategy::Global,
+        SqlitePartitioningStrategy::Type,
+        SqlitePartitioningStrategy::Aggregate,
+    ] {
+        let harness = PartitionedEventStore::new(partitioning).await;
+
+        for id in [
+            AggregateId::new("counter", "c1"),
+            AggregateId::new("counter", "c2"),
+            AggregateId::new("character", "ch1"),
+        ] {
+            harness
+                .store
+                .publish(
+                    &id,
+                    PublishOptions::default(),
+                    vec![make_counter_event("counter:incremented", 1)],
+                )
+                .await
+                .unwrap();
+        }
+
+        let ids = harness.store.enumerate_aggregates().await.unwrap();
+        let rendered: Vec<String> = ids.into_iter().map(|id| id.to_string()).collect();
+        assert_eq!(rendered, vec!["character:ch1", "counter:c1", "counter:c2"]);
+    }
+}
+
+#[tokio::test]
+async fn enumerate_aggregates_by_type_works_across_partitioning_strategies() {
+    for partitioning in [
+        SqlitePartitioningStrategy::Global,
+        SqlitePartitioningStrategy::Type,
+        SqlitePartitioningStrategy::Aggregate,
+    ] {
+        let harness = PartitionedEventStore::new(partitioning).await;
+
+        for id in [
+            AggregateId::new("counter", "c1"),
+            AggregateId::new("counter", "c2"),
+            AggregateId::new("character", "ch1"),
+        ] {
+            harness
+                .store
+                .publish(
+                    &id,
+                    PublishOptions::default(),
+                    vec![make_counter_event("counter:incremented", 1)],
+                )
+                .await
+                .unwrap();
+        }
+
+        let counter_type = AggregateType::new("counter");
+        let ids = harness
+            .store
+            .enumerate_aggregates_by_type(&counter_type)
+            .await
+            .unwrap();
+        let rendered: Vec<String> = ids.into_iter().map(|id| id.to_string()).collect();
+        assert_eq!(rendered, vec!["counter:c1", "counter:c2"]);
+    }
 }
 
 // ---------------------------------------------------------------------------

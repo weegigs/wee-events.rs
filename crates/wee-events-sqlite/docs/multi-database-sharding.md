@@ -10,6 +10,8 @@ This mirrors DynamoDB's partition key sharding: the aggregate ID is the partitio
 
 The SQLite event-store internals are identical regardless of how databases are partitioned. Only the open/enumerate surface changes.
 
+In the implemented API, partitioning is a best-effort storage-topology policy. Backends always preserve event-store semantics, but may choose how closely to realize a requested layout in practice. File-backed stores can express these layouts directly; other backends may collapse or adapt them.
+
 ### Single Database (current)
 
 All aggregates share one database file. Simplest deployment. Appropriate when a single actor owns all writes, or when the total data volume is small.
@@ -80,3 +82,14 @@ The key difference: DynamoDB rebalances partitions automatically as they grow. W
 ## Implementation Notes
 
 This is a design-space document, not an implementation plan. The current stores use a single database file per process. The internal code (`DocumentStore`, `SqliteEventStore`, projection functions) requires no changes to support any partitioning strategy — only the open/enumerate surface would change.
+
+The public API distinguishes:
+
+- `Strict(strategy)` for exact requested layouts
+- `Auto` for backend-managed adaptive layout
+
+The concrete strategy names are:
+
+- `Global`
+- `Type`
+- `Aggregate`

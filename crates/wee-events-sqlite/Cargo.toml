@@ -9,13 +9,16 @@ readme.workspace = true
 
 [dependencies]
 wee-events = { path = "../wee-events" }
-libsql = { version = "0.9.30", default-features = false, features = ["core"] }
+libsql = { version = "0.9.29", default-features = false, features = ["core", "remote", "tls"] }
 ulid = { version = "1", features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
+async-trait = "0.1"
 
 [dev-dependencies]
 wee-events = { path = "../wee-events", features = ["testing"] }
 tempfile = "3"
+testcontainers = "0.25"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
