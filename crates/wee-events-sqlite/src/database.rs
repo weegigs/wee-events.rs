@@ -55,17 +55,22 @@ pub(crate) async fn open_event_store_connection(
             prepare_local_connection(&conn).await?;
             conn
         }
-        SqliteDatabaseTarget::Remote {
+        SqliteDatabaseTarget::SqldDefault { url, auth_token }
+        | SqliteDatabaseTarget::Turso { url, auth_token } => {
+            let db = Builder::new_remote(url.clone(), auth_token.clone())
+                .build()
+                .await?;
+            let conn = db.connect()?;
+            prepare_remote_connection(&conn).await?;
+            conn
+        }
+        SqliteDatabaseTarget::SqldNamespace {
             url,
             auth_token,
             namespace,
         } => {
-            let builder = Builder::new_remote(url.clone(), auth_token.clone());
-            let builder = if let Some(namespace) = namespace {
-                builder.namespace(namespace.clone())
-            } else {
-                builder
-            };
+            let builder =
+                Builder::new_remote(url.clone(), auth_token.clone()).namespace(namespace.clone());
             let db = builder.build().await?;
             let conn = db.connect()?;
             prepare_remote_connection(&conn).await?;

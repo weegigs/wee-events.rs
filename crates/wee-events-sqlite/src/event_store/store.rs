@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use libsql::{Connection, TransactionBehavior};
@@ -13,145 +15,108 @@ use wee_events::{
 use crate::{database, Error};
 
 use super::backends::{InMemoryTargetResolver, LocalPartitionCatalog, ResolverPartitionCatalog};
+use super::strategies::{
+    GlobalStrategy, SqliteLocalPartitionStrategy, SqlitePartitionRead, SqlitePartitionStrategy,
+    SqliteSingleRemotePartitionStrategy, SqliteSqldNamespacedPartitionStrategy,
+};
 use super::types::{
-    SqliteBackend, SqlitePartition, SqlitePartitionCatalog, SqlitePartitioning,
-    SqlitePartitioningStrategy,
+    SqlitePartitionCatalog, SqliteSqldDefaultProvisioner, SqliteSqldNamespacedProvisioner,
+    SqliteTursoProvisioner,
 };
 
 type SharedConnection = Arc<AsyncMutex<Connection>>;
 
 /// SQLite-compatible event store backed by libSQL.
-pub struct SqliteEventStore {
-    catalog: Arc<dyn SqlitePartitionCatalog>,
-    connections: AsyncMutex<HashMap<SqlitePartition, SharedConnection>>,
-    known_partitions: AsyncMutex<Vec<SqlitePartition>>,
+pub struct SqliteEventStore<S = GlobalStrategy, C = LocalPartitionCatalog<GlobalStrategy>>
+where
+    S: SqlitePartitionStrategy,
+    C: SqlitePartitionCatalog<S::Partition>,
+{
+    strategy: S,
+    catalog: C,
+    connections: AsyncMutex<HashMap<S::Partition, SharedConnection>>,
+    known_partitions: AsyncMutex<Vec<S::Partition>>,
     generator: Mutex<Generator>,
 }
 
-impl SqliteEventStore {
-    /// Opens (or creates) a single local database at `path`.
-    pub async fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
-        Self::open_backend(
-            SqliteBackend::local(path.as_ref().to_path_buf()),
-            SqlitePartitioning::Strict(SqlitePartitioningStrategy::Global),
-        )
-        .await
-    }
+pub type SqliteLocalStore<S> = SqliteEventStore<S, LocalPartitionCatalog<S>>;
+pub type SqliteInMemoryStore<S> = SqliteEventStore<
+    S,
+    ResolverPartitionCatalog<
+        <S as SqlitePartitionStrategy>::Partition,
+        InMemoryTargetResolver<<S as SqlitePartitionStrategy>::Partition>,
+    >,
+>;
+pub type SqliteRemoteStore<S, R> =
+    SqliteEventStore<S, ResolverPartitionCatalog<<S as SqlitePartitionStrategy>::Partition, R>>;
 
-    /// Opens a local store with the requested strict partitioning strategy.
+impl SqliteEventStore<GlobalStrategy, LocalPartitionCatalog<GlobalStrategy>> {
+    pub fn builder() -> SqliteEventStoreBuilder<MissingBackend, MissingStrategy<()>> {
+        SqliteEventStoreBuilder::new()
+    }
+}
+
+impl<S> SqliteEventStore<S, LocalPartitionCatalog<S>>
+where
+    S: SqliteLocalPartitionStrategy,
+{
+    /// Opens a local store with the requested partitioning strategy.
     ///
-    /// For `Global`, `path` is the database file.
-    /// For the sharded variants, `path` is the root directory.
-    pub async fn open_with_partitioning(
-        path: impl AsRef<Path>,
-        partitioning: SqlitePartitioningStrategy,
-    ) -> Result<Self, Error> {
-        Self::open_backend(
-            SqliteBackend::local(path.as_ref().to_path_buf()),
-            SqlitePartitioning::Strict(partitioning),
-        )
-        .await
-    }
+    /// For `GlobalStrategy`, `path` is the database file.
+    /// For sharded strategies, `path` is the root directory.
+    pub async fn open_with_strategy(path: impl AsRef<Path>, strategy: S) -> Result<Self, Error> {
+        let store = SqliteEventStore::from_catalog(
+            strategy.clone(),
+            LocalPartitionCatalog::new(path.as_ref().to_path_buf(), strategy)?,
+        );
 
-    /// Opens a local store with the requested best-effort partitioning policy.
-    ///
-    /// `Auto` lets the local backend choose the storage layout it prefers.
-    pub async fn open_with_partitioning_policy(
-        path: impl AsRef<Path>,
-        partitioning: SqlitePartitioning,
-    ) -> Result<Self, Error> {
-        Self::open_backend(
-            SqliteBackend::local(path.as_ref().to_path_buf()),
-            partitioning,
-        )
-        .await
-    }
+        for partition in store.strategy.bootstrap_partitions() {
+            let _ = store.ensure_partition_open(&partition).await?;
+        }
 
+        Ok(store)
+    }
+}
+
+impl<S, C> SqliteEventStore<S, C>
+where
+    S: SqlitePartitionStrategy,
+    C: SqlitePartitionCatalog<S::Partition>,
+{
     /// Builds a store from a custom partition catalog.
-    pub fn from_catalog(catalog: impl SqlitePartitionCatalog + 'static) -> Self {
+    pub fn from_catalog(strategy: S, catalog: C) -> Self {
         Self {
-            catalog: Arc::new(catalog),
+            strategy,
+            catalog,
             connections: AsyncMutex::new(HashMap::new()),
             known_partitions: AsyncMutex::new(Vec::new()),
             generator: Mutex::new(Generator::new()),
         }
     }
 
-    /// Opens an in-memory database. Useful for testing.
-    pub async fn open_in_memory() -> Result<Self, Error> {
-        Self::open_in_memory_with_partitioning(SqlitePartitioningStrategy::Global).await
-    }
-
-    pub async fn open_in_memory_with_partitioning(
-        partitioning: SqlitePartitioningStrategy,
-    ) -> Result<Self, Error> {
-        Self::open_backend(
-            SqliteBackend::in_memory(),
-            SqlitePartitioning::Strict(partitioning),
-        )
-        .await
-    }
-
-    pub async fn open_in_memory_with_partitioning_policy(
-        partitioning: SqlitePartitioning,
-    ) -> Result<Self, Error> {
-        Self::open_backend(SqliteBackend::in_memory(), partitioning).await
-    }
-
-    /// Opens a store with a backend-specific best-effort partitioning policy.
-    pub async fn open_backend(
-        backend: SqliteBackend,
-        partitioning: SqlitePartitioning,
-    ) -> Result<Self, Error> {
-        let store = match backend {
-            SqliteBackend::InMemory => Self::from_catalog(ResolverPartitionCatalog::new(
-                SqlitePartitioning::Strict(
-                    partitioning.resolve(SqlitePartitioningStrategy::Global),
-                ),
-                Arc::new(InMemoryTargetResolver),
-            )),
-            SqliteBackend::Local(root) => {
-                Self::from_catalog(LocalPartitionCatalog::new(root, partitioning)?)
-            }
-            SqliteBackend::Remote(provisioner) => {
-                Self::from_catalog(ResolverPartitionCatalog::new(partitioning, provisioner))
-            }
-        };
-
-        if matches!(
-            partitioning.resolve(SqlitePartitioningStrategy::Aggregate),
-            SqlitePartitioningStrategy::Global
-        ) {
-            let _ = store
-                .ensure_partition_open(&SqlitePartition::Single)
-                .await?;
-        }
-
-        Ok(store)
-    }
-
     /// Returns all distinct aggregate IDs in the store.
     pub async fn enumerate_aggregates(&self) -> Result<Vec<AggregateId>, Error> {
         let mut ids = Vec::new();
         for partition in self.all_known_partitions().await? {
-            match &partition {
-                SqlitePartition::Single | SqlitePartition::Hashed(_) => {
+            match self.strategy.read_plan(&partition) {
+                SqlitePartitionRead::ScanAll => {
                     let Some(conn) = self.open_partition_if_exists(&partition).await? else {
                         continue;
                     };
                     let conn = conn.lock().await;
                     ids.extend(Self::enumerate_all_from_connection(&conn).await?);
                 }
-                SqlitePartition::AggregateType(aggregate_type) => {
+                SqlitePartitionRead::ScanType(aggregate_type) => {
                     let Some(conn) = self.open_partition_if_exists(&partition).await? else {
                         continue;
                     };
                     let conn = conn.lock().await;
                     ids.extend(
-                        Self::enumerate_by_type_from_connection(&conn, aggregate_type).await?,
+                        Self::enumerate_by_type_from_connection(&conn, &aggregate_type).await?,
                     );
                 }
-                SqlitePartition::Aggregate(aggregate_id) => ids.push(aggregate_id.clone()),
+                SqlitePartitionRead::Direct(aggregate_id) => ids.push(aggregate_id),
+                SqlitePartitionRead::Skip => {}
             }
         }
 
@@ -165,33 +130,25 @@ impl SqliteEventStore {
     ) -> Result<Vec<AggregateId>, Error> {
         let mut ids = Vec::new();
         for partition in self.all_known_partitions().await? {
-            match &partition {
-                SqlitePartition::Single | SqlitePartition::Hashed(_) => {
+            match self.strategy.read_plan_by_type(&partition, aggregate_type) {
+                SqlitePartitionRead::ScanAll => {
+                    let Some(conn) = self.open_partition_if_exists(&partition).await? else {
+                        continue;
+                    };
+                    let conn = conn.lock().await;
+                    ids.extend(Self::enumerate_all_from_connection(&conn).await?);
+                }
+                SqlitePartitionRead::ScanType(aggregate_type) => {
                     let Some(conn) = self.open_partition_if_exists(&partition).await? else {
                         continue;
                     };
                     let conn = conn.lock().await;
                     ids.extend(
-                        Self::enumerate_by_type_from_connection(&conn, aggregate_type).await?,
+                        Self::enumerate_by_type_from_connection(&conn, &aggregate_type).await?,
                     );
                 }
-                SqlitePartition::AggregateType(partition_type)
-                    if partition_type == aggregate_type =>
-                {
-                    let Some(conn) = self.open_partition_if_exists(&partition).await? else {
-                        continue;
-                    };
-                    let conn = conn.lock().await;
-                    ids.extend(
-                        Self::enumerate_by_type_from_connection(&conn, aggregate_type).await?,
-                    );
-                }
-                SqlitePartition::Aggregate(aggregate_id)
-                    if &aggregate_id.aggregate_type == aggregate_type =>
-                {
-                    ids.push(aggregate_id.clone());
-                }
-                _ => {}
+                SqlitePartitionRead::Direct(aggregate_id) => ids.push(aggregate_id),
+                SqlitePartitionRead::Skip => {}
             }
         }
 
@@ -200,7 +157,7 @@ impl SqliteEventStore {
 
     async fn ensure_partition_open(
         &self,
-        partition: &SqlitePartition,
+        partition: &S::Partition,
     ) -> Result<SharedConnection, Error> {
         self.remember_partition(partition).await;
         if let Some(conn) = self.connections.lock().await.get(partition).cloned() {
@@ -219,7 +176,7 @@ impl SqliteEventStore {
 
     async fn open_partition_if_exists(
         &self,
-        partition: &SqlitePartition,
+        partition: &S::Partition,
     ) -> Result<Option<SharedConnection>, Error> {
         self.remember_partition(partition).await;
         if let Some(conn) = self.connections.lock().await.get(partition).cloned() {
@@ -244,14 +201,14 @@ impl SqliteEventStore {
         ))
     }
 
-    async fn remember_partition(&self, partition: &SqlitePartition) {
+    async fn remember_partition(&self, partition: &S::Partition) {
         let mut known = self.known_partitions.lock().await;
         if !known.contains(partition) {
             known.push(partition.clone());
         }
     }
 
-    async fn all_known_partitions(&self) -> Result<Vec<SqlitePartition>, Error> {
+    async fn all_known_partitions(&self) -> Result<Vec<S::Partition>, Error> {
         let mut partitions = self.catalog.partitions().await?;
         {
             let known = self.known_partitions.lock().await;
@@ -369,7 +326,7 @@ impl SqliteEventStore {
     }
 
     async fn load_aggregate(&self, id: &AggregateId) -> Result<Aggregate, Error> {
-        let partition = self.catalog.partition_for_aggregate(id)?;
+        let partition = self.strategy.partition_for_aggregate(id)?;
         self.remember_partition(&partition).await;
         let Some(conn) = self.open_partition_if_exists(&partition).await? else {
             return Ok(Aggregate::empty(id.clone()));
@@ -452,7 +409,7 @@ impl SqliteEventStore {
         options: PublishOptions,
         events: Vec<RawEvent>,
     ) -> Result<ChangeSet, Error> {
-        let partition = self.catalog.partition_for_aggregate(aggregate_id)?;
+        let partition = self.strategy.partition_for_aggregate(aggregate_id)?;
         self.remember_partition(&partition).await;
         let conn = self.ensure_partition_open(&partition).await?;
         let conn = conn.lock().await;
@@ -532,7 +489,357 @@ impl SqliteEventStore {
     }
 }
 
-impl EventStore for SqliteEventStore {
+pub struct MissingBackend;
+pub struct InMemoryBackend;
+pub struct LocalBackend {
+    path: PathBuf,
+}
+pub struct SqldDefaultBackend<R> {
+    provisioner: R,
+}
+pub struct SqldNamespacedBackend<R> {
+    provisioner: R,
+}
+pub struct TursoBackend<R> {
+    provisioner: R,
+}
+
+pub struct MissingStrategy<P>(PhantomData<P>);
+pub struct WithStrategy<S>(S);
+
+pub struct SqliteEventStoreBuilder<B, T> {
+    backend: B,
+    strategy: T,
+}
+
+impl SqliteEventStoreBuilder<MissingBackend, MissingStrategy<()>> {
+    fn new() -> Self {
+        Self {
+            backend: MissingBackend,
+            strategy: MissingStrategy(PhantomData),
+        }
+    }
+
+    pub fn local(
+        self,
+        path: impl AsRef<Path>,
+    ) -> SqliteEventStoreBuilder<LocalBackend, MissingStrategy<()>> {
+        SqliteEventStoreBuilder {
+            backend: LocalBackend {
+                path: path.as_ref().to_path_buf(),
+            },
+            strategy: self.strategy,
+        }
+    }
+
+    pub fn in_memory(self) -> SqliteEventStoreBuilder<InMemoryBackend, MissingStrategy<()>> {
+        SqliteEventStoreBuilder {
+            backend: InMemoryBackend,
+            strategy: self.strategy,
+        }
+    }
+
+    pub fn sqld_default<R, P>(
+        self,
+        provisioner: R,
+    ) -> SqliteEventStoreBuilder<SqldDefaultBackend<R>, MissingStrategy<P>>
+    where
+        R: SqliteSqldDefaultProvisioner<P>,
+    {
+        SqliteEventStoreBuilder {
+            backend: SqldDefaultBackend { provisioner },
+            strategy: MissingStrategy(PhantomData),
+        }
+    }
+
+    pub fn sqld_namespaced<R, P>(
+        self,
+        provisioner: R,
+    ) -> SqliteEventStoreBuilder<SqldNamespacedBackend<R>, MissingStrategy<P>>
+    where
+        R: SqliteSqldNamespacedProvisioner<P>,
+    {
+        SqliteEventStoreBuilder {
+            backend: SqldNamespacedBackend { provisioner },
+            strategy: MissingStrategy(PhantomData),
+        }
+    }
+
+    pub fn turso<R, P>(
+        self,
+        provisioner: R,
+    ) -> SqliteEventStoreBuilder<TursoBackend<R>, MissingStrategy<P>>
+    where
+        R: SqliteTursoProvisioner<P>,
+    {
+        SqliteEventStoreBuilder {
+            backend: TursoBackend { provisioner },
+            strategy: MissingStrategy(PhantomData),
+        }
+    }
+
+    pub fn strategy<S>(
+        self,
+        strategy: S,
+    ) -> SqliteEventStoreBuilder<MissingBackend, WithStrategy<S>>
+    where
+        S: SqlitePartitionStrategy,
+    {
+        SqliteEventStoreBuilder {
+            backend: self.backend,
+            strategy: WithStrategy(strategy),
+        }
+    }
+}
+
+impl SqliteEventStoreBuilder<LocalBackend, MissingStrategy<()>> {
+    pub fn strategy<S>(self, strategy: S) -> SqliteEventStoreBuilder<LocalBackend, WithStrategy<S>>
+    where
+        S: SqliteLocalPartitionStrategy,
+    {
+        SqliteEventStoreBuilder {
+            backend: self.backend,
+            strategy: WithStrategy(strategy),
+        }
+    }
+}
+
+impl SqliteEventStoreBuilder<InMemoryBackend, MissingStrategy<()>> {
+    pub fn strategy<S>(
+        self,
+        strategy: S,
+    ) -> SqliteEventStoreBuilder<InMemoryBackend, WithStrategy<S>>
+    where
+        S: SqlitePartitionStrategy,
+    {
+        SqliteEventStoreBuilder {
+            backend: self.backend,
+            strategy: WithStrategy(strategy),
+        }
+    }
+}
+
+impl<R, P> SqliteEventStoreBuilder<SqldDefaultBackend<R>, MissingStrategy<P>>
+where
+    R: SqliteSqldDefaultProvisioner<P>,
+{
+    pub fn strategy<S>(
+        self,
+        strategy: S,
+    ) -> SqliteEventStoreBuilder<SqldDefaultBackend<R>, WithStrategy<S>>
+    where
+        S: SqliteSingleRemotePartitionStrategy<Partition = P>,
+    {
+        SqliteEventStoreBuilder {
+            backend: self.backend,
+            strategy: WithStrategy(strategy),
+        }
+    }
+}
+
+impl<R, P> SqliteEventStoreBuilder<SqldNamespacedBackend<R>, MissingStrategy<P>>
+where
+    R: SqliteSqldNamespacedProvisioner<P>,
+{
+    pub fn strategy<S>(
+        self,
+        strategy: S,
+    ) -> SqliteEventStoreBuilder<SqldNamespacedBackend<R>, WithStrategy<S>>
+    where
+        S: SqliteSqldNamespacedPartitionStrategy<Partition = P>,
+    {
+        SqliteEventStoreBuilder {
+            backend: self.backend,
+            strategy: WithStrategy(strategy),
+        }
+    }
+}
+
+impl<R, P> SqliteEventStoreBuilder<TursoBackend<R>, MissingStrategy<P>>
+where
+    R: SqliteTursoProvisioner<P>,
+{
+    pub fn strategy<S>(
+        self,
+        strategy: S,
+    ) -> SqliteEventStoreBuilder<TursoBackend<R>, WithStrategy<S>>
+    where
+        S: SqliteSingleRemotePartitionStrategy<Partition = P>,
+    {
+        SqliteEventStoreBuilder {
+            backend: self.backend,
+            strategy: WithStrategy(strategy),
+        }
+    }
+}
+
+impl<S> SqliteEventStoreBuilder<MissingBackend, WithStrategy<S>>
+where
+    S: SqlitePartitionStrategy,
+{
+    pub fn in_memory(self) -> SqliteEventStoreBuilder<InMemoryBackend, WithStrategy<S>> {
+        SqliteEventStoreBuilder {
+            backend: InMemoryBackend,
+            strategy: self.strategy,
+        }
+    }
+}
+
+impl<S> SqliteEventStoreBuilder<MissingBackend, WithStrategy<S>>
+where
+    S: SqliteLocalPartitionStrategy,
+{
+    pub fn local(
+        self,
+        path: impl AsRef<Path>,
+    ) -> SqliteEventStoreBuilder<LocalBackend, WithStrategy<S>> {
+        SqliteEventStoreBuilder {
+            backend: LocalBackend {
+                path: path.as_ref().to_path_buf(),
+            },
+            strategy: self.strategy,
+        }
+    }
+}
+
+impl<S> SqliteEventStoreBuilder<MissingBackend, WithStrategy<S>>
+where
+    S: SqliteSingleRemotePartitionStrategy,
+{
+    pub fn sqld_default(
+        self,
+        provisioner: impl SqliteSqldDefaultProvisioner<S::Partition>,
+    ) -> SqliteEventStoreBuilder<
+        SqldDefaultBackend<impl SqliteSqldDefaultProvisioner<S::Partition>>,
+        WithStrategy<S>,
+    > {
+        SqliteEventStoreBuilder {
+            backend: SqldDefaultBackend { provisioner },
+            strategy: self.strategy,
+        }
+    }
+
+    pub fn turso(
+        self,
+        provisioner: impl SqliteTursoProvisioner<S::Partition>,
+    ) -> SqliteEventStoreBuilder<
+        TursoBackend<impl SqliteTursoProvisioner<S::Partition>>,
+        WithStrategy<S>,
+    > {
+        SqliteEventStoreBuilder {
+            backend: TursoBackend { provisioner },
+            strategy: self.strategy,
+        }
+    }
+}
+
+impl<S> SqliteEventStoreBuilder<MissingBackend, WithStrategy<S>>
+where
+    S: SqliteSqldNamespacedPartitionStrategy,
+{
+    pub fn sqld_namespaced(
+        self,
+        provisioner: impl SqliteSqldNamespacedProvisioner<S::Partition>,
+    ) -> SqliteEventStoreBuilder<
+        SqldNamespacedBackend<impl SqliteSqldNamespacedProvisioner<S::Partition>>,
+        WithStrategy<S>,
+    > {
+        SqliteEventStoreBuilder {
+            backend: SqldNamespacedBackend { provisioner },
+            strategy: self.strategy,
+        }
+    }
+}
+
+impl<S> SqliteEventStoreBuilder<LocalBackend, WithStrategy<S>>
+where
+    S: SqliteLocalPartitionStrategy,
+{
+    pub async fn open(self) -> Result<SqliteLocalStore<S>, Error> {
+        SqliteEventStore::open_with_strategy(self.backend.path, self.strategy.0).await
+    }
+}
+
+impl<S> SqliteEventStoreBuilder<InMemoryBackend, WithStrategy<S>>
+where
+    S: SqlitePartitionStrategy,
+{
+    pub async fn open(self) -> Result<SqliteInMemoryStore<S>, Error> {
+        let store = SqliteEventStore::from_catalog(
+            self.strategy.0.clone(),
+            ResolverPartitionCatalog::new(InMemoryTargetResolver::<S::Partition>::default()),
+        );
+
+        for partition in store.strategy.bootstrap_partitions() {
+            let _ = store.ensure_partition_open(&partition).await?;
+        }
+
+        Ok(store)
+    }
+}
+
+impl<S, R> SqliteEventStoreBuilder<SqldDefaultBackend<R>, WithStrategy<S>>
+where
+    S: SqliteSingleRemotePartitionStrategy,
+    R: SqliteSqldDefaultProvisioner<S::Partition>,
+{
+    pub async fn open(self) -> Result<SqliteRemoteStore<S, R>, Error> {
+        let store = SqliteEventStore::from_catalog(
+            self.strategy.0.clone(),
+            ResolverPartitionCatalog::new(self.backend.provisioner),
+        );
+
+        for partition in store.strategy.bootstrap_partitions() {
+            let _ = store.ensure_partition_open(&partition).await?;
+        }
+
+        Ok(store)
+    }
+}
+
+impl<S, R> SqliteEventStoreBuilder<SqldNamespacedBackend<R>, WithStrategy<S>>
+where
+    S: SqliteSqldNamespacedPartitionStrategy,
+    R: SqliteSqldNamespacedProvisioner<S::Partition>,
+{
+    pub async fn open(self) -> Result<SqliteRemoteStore<S, R>, Error> {
+        let store = SqliteEventStore::from_catalog(
+            self.strategy.0.clone(),
+            ResolverPartitionCatalog::new(self.backend.provisioner),
+        );
+
+        for partition in store.strategy.bootstrap_partitions() {
+            let _ = store.ensure_partition_open(&partition).await?;
+        }
+
+        Ok(store)
+    }
+}
+
+impl<S, R> SqliteEventStoreBuilder<TursoBackend<R>, WithStrategy<S>>
+where
+    S: SqliteSingleRemotePartitionStrategy,
+    R: SqliteTursoProvisioner<S::Partition>,
+{
+    pub async fn open(self) -> Result<SqliteRemoteStore<S, R>, Error> {
+        let store = SqliteEventStore::from_catalog(
+            self.strategy.0.clone(),
+            ResolverPartitionCatalog::new(self.backend.provisioner),
+        );
+
+        for partition in store.strategy.bootstrap_partitions() {
+            let _ = store.ensure_partition_open(&partition).await?;
+        }
+
+        Ok(store)
+    }
+}
+
+impl<S, C> EventStore for SqliteEventStore<S, C>
+where
+    S: SqlitePartitionStrategy,
+    C: SqlitePartitionCatalog<S::Partition>,
+{
     async fn load(&self, id: &AggregateId) -> Result<Aggregate, wee_events::Error> {
         self.load_aggregate(id).await.map_err(Into::into)
     }

@@ -1,10 +1,18 @@
 mod backends;
 mod partitioning;
 mod store;
+mod strategies;
 mod types;
 
 pub use store::SqliteEventStore;
+pub use store::{SqliteInMemoryStore, SqliteLocalStore, SqliteRemoteStore};
+pub use strategies::{
+    AggregatePartition, AggregateStrategy, BucketPartition, GlobalPartition, GlobalStrategy,
+    HashedStrategy, SqliteLocalPartitionStrategy, SqlitePartitionKey, SqlitePartitionRead,
+    SqlitePartitionStrategy, SqliteSingleRemotePartitionStrategy,
+    SqliteSqldNamespacedPartitionStrategy, TypePartition, TypeStrategy,
+};
 pub use types::{
-    SqliteBackend, SqliteDatabaseTarget, SqlitePartition, SqlitePartitionCatalog,
-    SqlitePartitioning, SqlitePartitioningStrategy, SqliteTargetProvisioner,
+    SqliteDatabaseTarget, SqlitePartitionCatalog, SqliteSqldDefaultProvisioner,
+    SqliteSqldNamespacedProvisioner, SqliteTargetProvisioner, SqliteTursoProvisioner,
 };

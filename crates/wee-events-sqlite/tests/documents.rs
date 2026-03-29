@@ -1,3 +1,4 @@
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
 use libsql::Builder;
@@ -6,7 +7,38 @@ use wee_events::{
     AggregateId, AggregateType, EventData, EventStore, EventType, PublishOptions, RawEvent,
     ReduceFn, Renderer, Revision,
 };
-use wee_events_sqlite::{DocumentStore, SqliteEventStore, SqlitePartitioningStrategy};
+use wee_events_sqlite::{
+    AggregateStrategy, DocumentStore, GlobalStrategy, HashedStrategy, SqliteEventStore,
+    SqliteLocalPartitionStrategy, TypeStrategy,
+};
+
+trait LocalStorePath {
+    fn local_store_path(temp_dir: &tempfile::TempDir) -> PathBuf;
+}
+
+impl LocalStorePath for GlobalStrategy {
+    fn local_store_path(temp_dir: &tempfile::TempDir) -> PathBuf {
+        temp_dir.path().join("store.db")
+    }
+}
+
+impl LocalStorePath for TypeStrategy {
+    fn local_store_path(temp_dir: &tempfile::TempDir) -> PathBuf {
+        temp_dir.path().to_path_buf()
+    }
+}
+
+impl LocalStorePath for AggregateStrategy {
+    fn local_store_path(temp_dir: &tempfile::TempDir) -> PathBuf {
+        temp_dir.path().to_path_buf()
+    }
+}
+
+impl LocalStorePath for HashedStrategy {
+    fn local_store_path(temp_dir: &tempfile::TempDir) -> PathBuf {
+        temp_dir.path().to_path_buf()
+    }
+}
 
 async fn test_document_store() -> DocumentStore {
     DocumentStore::open_in_memory().await.unwrap()
@@ -19,32 +51,6 @@ struct SharedStores {
     document_store: DocumentStore,
 }
 
-struct PartitionedEventStore {
-    _temp_dir: tempfile::TempDir,
-    store: SqliteEventStore,
-}
-
-impl PartitionedEventStore {
-    async fn new(partitioning: SqlitePartitioningStrategy) -> Self {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let store = match partitioning {
-            SqlitePartitioningStrategy::Global => {
-                SqliteEventStore::open(temp_dir.path().join("store.db"))
-                    .await
-                    .unwrap()
-            }
-            _ => SqliteEventStore::open_with_partitioning(temp_dir.path(), partitioning)
-                .await
-                .unwrap(),
-        };
-
-        Self {
-            _temp_dir: temp_dir,
-            store,
-        }
-    }
-}
-
 impl SharedStores {
     async fn new() -> Self {
         let temp_dir = std::env::temp_dir();
@@ -54,7 +60,12 @@ impl SharedStores {
             "wee-events-sqlite-documents-{}.db",
             ulid::Ulid::new()
         ));
-        let event_store = SqliteEventStore::open(&event_db_path).await.unwrap();
+        let event_store = SqliteEventStore::builder()
+            .local(&event_db_path)
+            .strategy(GlobalStrategy)
+            .open()
+            .await
+            .unwrap();
         let document_store = DocumentStore::open(&document_db_path).await.unwrap();
 
         Self {
@@ -290,7 +301,12 @@ async fn event_store_open_only_creates_event_schema() {
         "wee-events-sqlite-events-only-{}.db",
         ulid::Ulid::new()
     ));
-    let _store = SqliteEventStore::open(&db_path).await.unwrap();
+    let _store = SqliteEventStore::builder()
+        .local(&db_path)
+        .strategy(GlobalStrategy)
+        .open()
+        .await
+        .unwrap();
 
     assert!(table_exists(&db_path, "events").await);
     assert!(!table_exists(&db_path, "documents").await);
@@ -314,69 +330,86 @@ async fn document_store_open_only_creates_document_schema() {
 
 #[tokio::test]
 async fn enumerate_aggregates_works_across_partitioning_strategies() {
-    for partitioning in [
-        SqlitePartitioningStrategy::Global,
-        SqlitePartitioningStrategy::Type,
-        SqlitePartitioningStrategy::Aggregate,
-    ] {
-        let harness = PartitionedEventStore::new(partitioning).await;
-
-        for id in [
-            AggregateId::new("counter", "c1"),
-            AggregateId::new("counter", "c2"),
-            AggregateId::new("character", "ch1"),
-        ] {
-            harness
-                .store
-                .publish(
-                    &id,
-                    PublishOptions::default(),
-                    vec![make_counter_event("counter:incremented", 1)],
-                )
-                .await
-                .unwrap();
-        }
-
-        let ids = harness.store.enumerate_aggregates().await.unwrap();
-        let rendered: Vec<String> = ids.into_iter().map(|id| id.to_string()).collect();
-        assert_eq!(rendered, vec!["character:ch1", "counter:c1", "counter:c2"]);
-    }
+    assert_enumerates_aggregates(GlobalStrategy).await;
+    assert_enumerates_aggregates(TypeStrategy).await;
+    assert_enumerates_aggregates(AggregateStrategy).await;
+    assert_enumerates_aggregates(HashedStrategy::new(NonZeroU32::new(8).unwrap())).await;
 }
 
 #[tokio::test]
 async fn enumerate_aggregates_by_type_works_across_partitioning_strategies() {
-    for partitioning in [
-        SqlitePartitioningStrategy::Global,
-        SqlitePartitioningStrategy::Type,
-        SqlitePartitioningStrategy::Aggregate,
+    assert_enumerates_aggregates_by_type(GlobalStrategy).await;
+    assert_enumerates_aggregates_by_type(TypeStrategy).await;
+    assert_enumerates_aggregates_by_type(AggregateStrategy).await;
+    assert_enumerates_aggregates_by_type(HashedStrategy::new(NonZeroU32::new(8).unwrap())).await;
+}
+
+async fn assert_enumerates_aggregates<S>(strategy: S)
+where
+    S: SqliteLocalPartitionStrategy + LocalStorePath,
+{
+    let temp_dir = tempfile::tempdir().unwrap();
+    let store = SqliteEventStore::builder()
+        .local(S::local_store_path(&temp_dir))
+        .strategy(strategy)
+        .open()
+        .await
+        .unwrap();
+
+    for id in [
+        AggregateId::new("counter", "c1"),
+        AggregateId::new("counter", "c2"),
+        AggregateId::new("character", "ch1"),
     ] {
-        let harness = PartitionedEventStore::new(partitioning).await;
-
-        for id in [
-            AggregateId::new("counter", "c1"),
-            AggregateId::new("counter", "c2"),
-            AggregateId::new("character", "ch1"),
-        ] {
-            harness
-                .store
-                .publish(
-                    &id,
-                    PublishOptions::default(),
-                    vec![make_counter_event("counter:incremented", 1)],
-                )
-                .await
-                .unwrap();
-        }
-
-        let counter_type = AggregateType::new("counter");
-        let ids = harness
-            .store
-            .enumerate_aggregates_by_type(&counter_type)
+        store
+            .publish(
+                &id,
+                PublishOptions::default(),
+                vec![make_counter_event("counter:incremented", 1)],
+            )
             .await
             .unwrap();
-        let rendered: Vec<String> = ids.into_iter().map(|id| id.to_string()).collect();
-        assert_eq!(rendered, vec!["counter:c1", "counter:c2"]);
     }
+
+    let ids = store.enumerate_aggregates().await.unwrap();
+    let rendered: Vec<String> = ids.into_iter().map(|id| id.to_string()).collect();
+    assert_eq!(rendered, vec!["character:ch1", "counter:c1", "counter:c2"]);
+}
+
+async fn assert_enumerates_aggregates_by_type<S>(strategy: S)
+where
+    S: SqliteLocalPartitionStrategy + LocalStorePath,
+{
+    let temp_dir = tempfile::tempdir().unwrap();
+    let store = SqliteEventStore::builder()
+        .local(S::local_store_path(&temp_dir))
+        .strategy(strategy)
+        .open()
+        .await
+        .unwrap();
+
+    for id in [
+        AggregateId::new("counter", "c1"),
+        AggregateId::new("counter", "c2"),
+        AggregateId::new("character", "ch1"),
+    ] {
+        store
+            .publish(
+                &id,
+                PublishOptions::default(),
+                vec![make_counter_event("counter:incremented", 1)],
+            )
+            .await
+            .unwrap();
+    }
+
+    let counter_type = AggregateType::new("counter");
+    let ids = store
+        .enumerate_aggregates_by_type(&counter_type)
+        .await
+        .unwrap();
+    let rendered: Vec<String> = ids.into_iter().map(|id| id.to_string()).collect();
+    assert_eq!(rendered, vec!["counter:c1", "counter:c2"]);
 }
 
 // ---------------------------------------------------------------------------
