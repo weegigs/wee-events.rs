@@ -171,6 +171,7 @@ fn namespace_for_partition(partition: &SqlitePartition) -> String {
         SqlitePartition::AggregateType(aggregate_type) => {
             format!("type-{}", sanitize(aggregate_type.as_str()))
         }
+        SqlitePartition::Hashed(bucket) => format!("bucket-{bucket}"),
         SqlitePartition::Aggregate(aggregate_id) => format!(
             "agg-{}-{}",
             sanitize(aggregate_id.aggregate_type.as_str()),
@@ -376,6 +377,14 @@ wee_events::testing::store_test_suite!(
     .await
 );
 wee_events::testing::store_test_suite!(
+    sqlite_store_in_memory_hashed,
+    make_store(
+        TestStoreKind::InMemory,
+        SqlitePartitioningStrategy::Hashed { buckets: 8 }
+    )
+    .await
+);
+wee_events::testing::store_test_suite!(
     sqlite_store_local_single,
     make_store(TestStoreKind::Local, SqlitePartitioningStrategy::Global).await
 );
@@ -386,6 +395,14 @@ wee_events::testing::store_test_suite!(
 wee_events::testing::store_test_suite!(
     sqlite_store_local_per_aggregate,
     make_store(TestStoreKind::Local, SqlitePartitioningStrategy::Aggregate).await
+);
+wee_events::testing::store_test_suite!(
+    sqlite_store_local_hashed,
+    make_store(
+        TestStoreKind::Local,
+        SqlitePartitioningStrategy::Hashed { buckets: 8 }
+    )
+    .await
 );
 wee_events::testing::store_test_suite!(
     sqlite_store_remote_sqld_single,
@@ -404,6 +421,14 @@ wee_events::testing::store_test_suite!(
     make_store(
         TestStoreKind::RemoteSqld,
         SqlitePartitioningStrategy::Aggregate
+    )
+    .await
+);
+wee_events::testing::store_test_suite!(
+    sqlite_store_remote_sqld_hashed,
+    make_store(
+        TestStoreKind::RemoteSqld,
+        SqlitePartitioningStrategy::Hashed { buckets: 8 }
     )
     .await
 );
@@ -547,4 +572,9 @@ optional_store_test_suite!(
     sqlite_store_turso_per_aggregate,
     TestStoreKind::TursoCloud,
     SqlitePartitioningStrategy::Aggregate
+);
+optional_store_test_suite!(
+    sqlite_store_turso_hashed,
+    TestStoreKind::TursoCloud,
+    SqlitePartitioningStrategy::Hashed { buckets: 8 }
 );

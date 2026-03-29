@@ -135,7 +135,7 @@ impl SqliteEventStore {
         let mut ids = Vec::new();
         for partition in self.all_known_partitions().await? {
             match &partition {
-                SqlitePartition::Single => {
+                SqlitePartition::Single | SqlitePartition::Hashed(_) => {
                     let Some(conn) = self.open_partition_if_exists(&partition).await? else {
                         continue;
                     };
@@ -166,7 +166,7 @@ impl SqliteEventStore {
         let mut ids = Vec::new();
         for partition in self.all_known_partitions().await? {
             match &partition {
-                SqlitePartition::Single => {
+                SqlitePartition::Single | SqlitePartition::Hashed(_) => {
                     let Some(conn) = self.open_partition_if_exists(&partition).await? else {
                         continue;
                     };

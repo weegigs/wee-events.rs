@@ -38,6 +38,9 @@ impl LocalPartitionCatalog {
                     .join(aggregate_id.aggregate_type.as_str())
                     .join(format!("{}.db", aggregate_id.aggregate_key)))
             }
+            (SqlitePartitioningStrategy::Hashed { .. }, SqlitePartition::Hashed(bucket)) => {
+                Ok(self.root.join(format!("bucket-{bucket}.db")))
+            }
             _ => Err(Error::Configuration(format!(
                 "partition {partition:?} does not match local partitioning strategy {:?}",
                 self.strategy
@@ -59,15 +62,7 @@ impl SqlitePartitionCatalog for LocalPartitionCatalog {
         &self,
         aggregate_id: &AggregateId,
     ) -> Result<SqlitePartition, Error> {
-        Ok(match self.strategy {
-            SqlitePartitioningStrategy::Global => SqlitePartition::Single,
-            SqlitePartitioningStrategy::Type => {
-                SqlitePartition::AggregateType(aggregate_id.aggregate_type.clone())
-            }
-            SqlitePartitioningStrategy::Aggregate => {
-                SqlitePartition::Aggregate(aggregate_id.clone())
-            }
-        })
+        self.strategy.partition_for_aggregate(aggregate_id)
     }
 
     async fn ensure_target_for_partition(
@@ -127,6 +122,24 @@ impl SqlitePartitionCatalog for LocalPartitionCatalog {
                             aggregate_key,
                         )));
                     }
+                }
+                Ok(partitions)
+            }
+            SqlitePartitioningStrategy::Hashed { .. } => {
+                let mut partitions = Vec::new();
+                for entry in std::fs::read_dir(&self.root)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    let Some(stem) = Self::db_file_stem(&path) else {
+                        continue;
+                    };
+                    let Some(bucket) = stem.strip_prefix("bucket-") else {
+                        continue;
+                    };
+                    let Ok(bucket) = bucket.parse::<u32>() else {
+                        continue;
+                    };
+                    partitions.push(SqlitePartition::Hashed(bucket));
                 }
                 Ok(partitions)
             }

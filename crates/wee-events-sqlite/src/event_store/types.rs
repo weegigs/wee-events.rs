@@ -14,6 +14,7 @@ pub enum SqlitePartitioningStrategy {
     Global,
     Type,
     Aggregate,
+    Hashed { buckets: u32 },
 }
 
 /// Best-effort partitioning policy for an event store backend.
@@ -95,6 +96,51 @@ pub enum SqlitePartition {
     Single,
     AggregateType(AggregateType),
     Aggregate(AggregateId),
+    Hashed(u32),
+}
+
+impl SqlitePartitioningStrategy {
+    pub(crate) fn partition_for_aggregate(
+        self,
+        aggregate_id: &AggregateId,
+    ) -> Result<SqlitePartition, Error> {
+        match self {
+            Self::Global => Ok(SqlitePartition::Single),
+            Self::Type => Ok(SqlitePartition::AggregateType(
+                aggregate_id.aggregate_type.clone(),
+            )),
+            Self::Aggregate => Ok(SqlitePartition::Aggregate(aggregate_id.clone())),
+            Self::Hashed { buckets } => {
+                if buckets == 0 {
+                    return Err(Error::Configuration(
+                        "hashed partitioning requires at least one bucket".to_string(),
+                    ));
+                }
+
+                Ok(SqlitePartition::Hashed(
+                    hash_aggregate_id(aggregate_id) % buckets,
+                ))
+            }
+        }
+    }
+}
+
+fn hash_aggregate_id(aggregate_id: &AggregateId) -> u32 {
+    // Stable FNV-1a so bucket assignment is reproducible across processes.
+    let mut hash = 0x811c9dc5_u32;
+
+    for byte in aggregate_id
+        .aggregate_type
+        .as_str()
+        .bytes()
+        .chain([b':'])
+        .chain(aggregate_id.aggregate_key.bytes())
+    {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+
+    hash
 }
 
 #[async_trait]

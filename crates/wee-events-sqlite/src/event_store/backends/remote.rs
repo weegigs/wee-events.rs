@@ -34,15 +34,7 @@ impl SqlitePartitionCatalog for ResolverPartitionCatalog {
         &self,
         aggregate_id: &AggregateId,
     ) -> Result<SqlitePartition, Error> {
-        Ok(match self.strategy {
-            SqlitePartitioningStrategy::Global => SqlitePartition::Single,
-            SqlitePartitioningStrategy::Type => {
-                SqlitePartition::AggregateType(aggregate_id.aggregate_type.clone())
-            }
-            SqlitePartitioningStrategy::Aggregate => {
-                SqlitePartition::Aggregate(aggregate_id.clone())
-            }
-        })
+        self.strategy.partition_for_aggregate(aggregate_id)
     }
 
     async fn ensure_target_for_partition(
