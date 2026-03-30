@@ -212,7 +212,10 @@ wee_events::testing::store_test_suite!(
     .await
 );
 
-optional_store_test_suite!(sqlite_store_turso_single, make_turso_store(GlobalStrategy));
+optional_store_test_suite!(
+    sqlite_store_turso_default_partition,
+    make_turso_store(GlobalStrategy)
+);
 
 async fn make_in_memory_store<S>(strategy: S) -> TempStore<InMemoryStore<S>>
 where
@@ -289,9 +292,9 @@ async fn make_remote_sqld_default_store(
 
 async fn make_turso_store<S>(
     strategy: S,
-) -> TempStore<SingleRemoteStore<S, FixedRemoteTargetProvisioner>>
+) -> TempStore<NamedRemoteStore<S, FixedRemoteTargetProvisioner>>
 where
-    S: SingleTargetPartitionStrategy,
+    S: PartitionNamingStrategy,
 {
     let url = std::env::var("TURSO_DATABASE_URL").unwrap();
     let auth_token = std::env::var("TURSO_AUTH_TOKEN").unwrap();
@@ -474,6 +477,38 @@ impl SqldDefaultProvisionerTrait for TestSqldDefaultProvisioner {}
 struct FixedRemoteTargetProvisioner {
     url: String,
     auth_token: String,
+}
+
+impl NamedTargetProvisioner for FixedRemoteTargetProvisioner {
+    async fn ensure_target_for_name(
+        &self,
+        name: PartitionName<'_>,
+    ) -> Result<DatabaseTarget, Error> {
+        match name {
+            PartitionName::Default => Ok(DatabaseTarget::Turso {
+                url: self.url.clone(),
+                auth_token: self.auth_token.clone(),
+            }),
+            PartitionName::Named(name) => Err(Error::Configuration(format!(
+                "test Turso provisioner does not support named partitions: {name}"
+            ))),
+        }
+    }
+
+    async fn target_for_existing_name(
+        &self,
+        name: PartitionName<'_>,
+    ) -> Result<Option<DatabaseTarget>, Error> {
+        match name {
+            PartitionName::Default => Ok(Some(DatabaseTarget::Turso {
+                url: self.url.clone(),
+                auth_token: self.auth_token.clone(),
+            })),
+            PartitionName::Named(name) => Err(Error::Configuration(format!(
+                "test Turso provisioner does not support named partitions: {name}"
+            ))),
+        }
+    }
 }
 
 impl SingleTargetProvisioner for FixedRemoteTargetProvisioner {

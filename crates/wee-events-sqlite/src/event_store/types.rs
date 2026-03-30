@@ -55,7 +55,7 @@ pub trait SingleTargetProvisioner: Send + Sync {
     /// Returns the single concrete target, creating or provisioning it if needed.
     ///
     /// Use this for backends where every logical partition is realized by the
-    /// same external target, such as `sqld_default` and `turso`.
+    /// same external target, such as `sqld_default`.
     async fn ensure_target(&self) -> Result<DatabaseTarget, Error>;
 
     /// Returns the single target if it already exists.
@@ -96,5 +96,83 @@ pub trait SqldDefaultProvisioner: SingleTargetProvisioner {}
 /// Provisioner for sqld databases addressed by logical partition name.
 pub trait SqldNamespacedProvisioner: NamedTargetProvisioner {}
 
-/// Provisioner for a single Turso database.
-pub trait TursoProvisioner: SingleTargetProvisioner {}
+/// Provisioner for Turso databases addressed by logical partition name.
+///
+/// This matches Turso's Multi-DB Schema pattern: the event-store partition name
+/// is the stable backend-facing key, and the provisioner maps that key to a
+/// concrete Turso database URL.
+pub trait TursoProvisioner: NamedTargetProvisioner {}
+
+#[cfg(test)]
+mod tests {
+    use super::{DatabaseTarget, NamedTargetProvisioner, PartitionName, TursoProvisioner};
+    use crate::Error;
+
+    #[derive(Debug, Clone)]
+    struct TestTursoProvisioner;
+
+    impl NamedTargetProvisioner for TestTursoProvisioner {
+        async fn ensure_target_for_name(
+            &self,
+            name: PartitionName<'_>,
+        ) -> Result<DatabaseTarget, Error> {
+            Ok(match name {
+                PartitionName::Default => DatabaseTarget::Turso {
+                    url: "libsql://root-org.turso.io".to_string(),
+                    auth_token: "token".to_string(),
+                },
+                PartitionName::Named(name) => DatabaseTarget::Turso {
+                    url: format!("libsql://{name}-org.turso.io"),
+                    auth_token: "token".to_string(),
+                },
+            })
+        }
+
+        async fn target_for_existing_name(
+            &self,
+            name: PartitionName<'_>,
+        ) -> Result<Option<DatabaseTarget>, Error> {
+            Ok(Some(self.ensure_target_for_name(name).await?))
+        }
+
+        async fn names(&self) -> Result<Vec<String>, Error> {
+            Ok(vec!["orders".to_string(), "users".to_string()])
+        }
+    }
+
+    impl TursoProvisioner for TestTursoProvisioner {}
+
+    #[tokio::test]
+    async fn turso_provisioners_resolve_named_partitions() {
+        let default_target = TestTursoProvisioner
+            .ensure_target_for_name(PartitionName::Default)
+            .await
+            .expect("default target should resolve");
+        let named_target = TestTursoProvisioner
+            .ensure_target_for_name(PartitionName::Named("orders"))
+            .await
+            .expect("named target should resolve");
+
+        assert_eq!(
+            default_target,
+            DatabaseTarget::Turso {
+                url: "libsql://root-org.turso.io".to_string(),
+                auth_token: "token".to_string(),
+            }
+        );
+        assert_eq!(
+            named_target,
+            DatabaseTarget::Turso {
+                url: "libsql://orders-org.turso.io".to_string(),
+                auth_token: "token".to_string(),
+            }
+        );
+        assert_eq!(
+            TestTursoProvisioner
+                .names()
+                .await
+                .expect("names should enumerate"),
+            vec!["orders".to_string(), "users".to_string()]
+        );
+    }
+}

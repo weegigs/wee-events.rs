@@ -15,7 +15,8 @@ use wee_events::{
 use crate::{database, Error};
 
 use super::backends::{
-    InMemoryTargetResolver, LocalPartitionCatalog, NamedTargetCatalog, SingleTargetCatalog,
+    BackendBinding, InMemoryTargetResolver, LocalPartitionCatalog, NamedTargetCatalog,
+    SingleTargetCatalog,
 };
 use super::strategies::{
     GlobalStrategy, LocalPartitionStrategy, PartitionNamingStrategy, PartitionRead,
@@ -490,16 +491,16 @@ where
 pub struct MissingBackend;
 pub struct InMemoryBackend;
 pub struct LocalBackend {
-    path: PathBuf,
+    pub(super) path: PathBuf,
 }
 pub struct SqldDefaultBackend<R> {
-    provisioner: R,
+    pub(super) provisioner: R,
 }
 pub struct SqldNamespacedBackend<R> {
-    provisioner: R,
+    pub(super) provisioner: R,
 }
 pub struct TursoBackend<R> {
-    provisioner: R,
+    pub(super) provisioner: R,
 }
 
 pub struct MissingStrategy<P>(PhantomData<P>);
@@ -656,7 +657,7 @@ where
 {
     pub fn strategy<S>(self, strategy: S) -> EventStoreBuilder<TursoBackend<R>, WithStrategy<S>>
     where
-        S: SingleTargetPartitionStrategy,
+        S: PartitionNamingStrategy,
     {
         EventStoreBuilder {
             backend: self.backend,
@@ -704,7 +705,12 @@ where
             strategy: self.strategy,
         }
     }
+}
 
+impl<S> EventStoreBuilder<MissingBackend, WithStrategy<S>>
+where
+    S: PartitionNamingStrategy,
+{
     pub fn turso(
         self,
         provisioner: impl TursoProvisioner,
@@ -732,80 +738,15 @@ where
     }
 }
 
-impl<S> EventStoreBuilder<LocalBackend, WithStrategy<S>>
+impl<B, S> EventStoreBuilder<B, WithStrategy<S>>
 where
-    S: LocalPartitionStrategy,
+    S: PartitionStrategy,
+    B: BackendBinding<S>,
 {
-    pub async fn open(self) -> Result<LocalStore<S>, Error> {
-        EventStore::open_with_strategy(self.backend.path, self.strategy.0).await
-    }
-}
-
-impl<S> EventStoreBuilder<InMemoryBackend, WithStrategy<S>>
-where
-    S: SingleTargetPartitionStrategy,
-{
-    pub async fn open(self) -> Result<InMemoryStore<S>, Error> {
+    pub async fn open(self) -> Result<EventStore<S, B::Catalog>, Error> {
         let store = EventStore::from_catalog(
             self.strategy.0.clone(),
-            SingleTargetCatalog::new(InMemoryTargetResolver),
-        );
-
-        for partition in store.strategy.bootstrap_partitions() {
-            let _ = store.ensure_partition_open(&partition).await?;
-        }
-
-        Ok(store)
-    }
-}
-
-impl<S, R> EventStoreBuilder<SqldDefaultBackend<R>, WithStrategy<S>>
-where
-    S: SingleTargetPartitionStrategy,
-    R: SqldDefaultProvisioner,
-{
-    pub async fn open(self) -> Result<SingleRemoteStore<S, R>, Error> {
-        let store = EventStore::from_catalog(
-            self.strategy.0.clone(),
-            SingleTargetCatalog::new(self.backend.provisioner),
-        );
-
-        for partition in store.strategy.bootstrap_partitions() {
-            let _ = store.ensure_partition_open(&partition).await?;
-        }
-
-        Ok(store)
-    }
-}
-
-impl<S, R> EventStoreBuilder<SqldNamespacedBackend<R>, WithStrategy<S>>
-where
-    S: SqldNamespacedPartitionStrategy + PartitionNamingStrategy,
-    R: SqldNamespacedProvisioner,
-{
-    pub async fn open(self) -> Result<NamedRemoteStore<S, R>, Error> {
-        let store = EventStore::from_catalog(
-            self.strategy.0.clone(),
-            NamedTargetCatalog::new(self.strategy.0.clone(), self.backend.provisioner),
-        );
-
-        for partition in store.strategy.bootstrap_partitions() {
-            let _ = store.ensure_partition_open(&partition).await?;
-        }
-
-        Ok(store)
-    }
-}
-
-impl<S, R> EventStoreBuilder<TursoBackend<R>, WithStrategy<S>>
-where
-    S: SingleTargetPartitionStrategy,
-    R: TursoProvisioner,
-{
-    pub async fn open(self) -> Result<SingleRemoteStore<S, R>, Error> {
-        let store = EventStore::from_catalog(
-            self.strategy.0.clone(),
-            SingleTargetCatalog::new(self.backend.provisioner),
+            self.backend.into_catalog(&self.strategy.0)?,
         );
 
         for partition in store.strategy.bootstrap_partitions() {

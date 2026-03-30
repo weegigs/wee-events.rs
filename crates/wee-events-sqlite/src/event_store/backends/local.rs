@@ -5,8 +5,10 @@ use data_encoding::BASE32_NOPAD;
 use crate::Error;
 
 use super::super::partitioning::PartitionCatalog;
+use super::super::store::LocalBackend;
 use super::super::strategies::{LocalPartitionLayout, LocalPartitionStrategy, PartitionName};
 use super::super::types::DatabaseTarget;
+use super::BackendBinding;
 
 #[derive(Debug)]
 pub struct LocalPartitionCatalog<S> {
@@ -92,6 +94,17 @@ where
 
     async fn partitions(&self) -> Result<Vec<S::Partition>, Error> {
         self.discover_partitions()
+    }
+}
+
+impl<S> BackendBinding<S> for LocalBackend
+where
+    S: LocalPartitionStrategy,
+{
+    type Catalog = LocalPartitionCatalog<S>;
+
+    fn into_catalog(self, strategy: &S) -> Result<Self::Catalog, Error> {
+        LocalPartitionCatalog::new(self.path, strategy.clone())
     }
 }
 
