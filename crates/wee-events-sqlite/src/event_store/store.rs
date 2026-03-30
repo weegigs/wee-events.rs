@@ -19,7 +19,7 @@ use super::backends::{
 };
 use super::strategies::{
     GlobalStrategy, LocalPartitionStrategy, PartitionNamingStrategy, PartitionRead,
-    PartitionStrategy, SingleRemotePartitionStrategy, SqldNamespacedPartitionStrategy,
+    PartitionStrategy, SingleTargetPartitionStrategy, SqldNamespacedPartitionStrategy,
 };
 use super::types::{
     PartitionCatalog, SqldDefaultProvisioner, SqldNamespacedProvisioner, TursoProvisioner,
@@ -217,7 +217,7 @@ where
             }
         }
 
-        partitions.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+        partitions.sort();
         partitions.dedup();
         Ok(partitions)
     }
@@ -530,12 +530,7 @@ impl EventStoreBuilder<MissingBackend, MissingStrategy<()>> {
         }
     }
 
-    /// Configures an ephemeral in-memory backend.
-    ///
-    /// This backend is still partition-aware: non-global strategies create one
-    /// in-memory SQLite connection per logical partition. Those partitions are
-    /// tracked in-process by the store; they are not converted into external
-    /// names or on-disk files.
+    /// Configures an ephemeral single-database in-memory backend.
     pub fn in_memory(self) -> EventStoreBuilder<InMemoryBackend, MissingStrategy<()>> {
         EventStoreBuilder {
             backend: InMemoryBackend,
@@ -610,7 +605,7 @@ impl EventStoreBuilder<LocalBackend, MissingStrategy<()>> {
 impl EventStoreBuilder<InMemoryBackend, MissingStrategy<()>> {
     pub fn strategy<S>(self, strategy: S) -> EventStoreBuilder<InMemoryBackend, WithStrategy<S>>
     where
-        S: PartitionStrategy,
+        S: SingleTargetPartitionStrategy,
     {
         EventStoreBuilder {
             backend: self.backend,
@@ -628,7 +623,7 @@ where
         strategy: S,
     ) -> EventStoreBuilder<SqldDefaultBackend<R>, WithStrategy<S>>
     where
-        S: SingleRemotePartitionStrategy,
+        S: SingleTargetPartitionStrategy,
     {
         EventStoreBuilder {
             backend: self.backend,
@@ -661,7 +656,7 @@ where
 {
     pub fn strategy<S>(self, strategy: S) -> EventStoreBuilder<TursoBackend<R>, WithStrategy<S>>
     where
-        S: SingleRemotePartitionStrategy,
+        S: SingleTargetPartitionStrategy,
     {
         EventStoreBuilder {
             backend: self.backend,
@@ -672,7 +667,7 @@ where
 
 impl<S> EventStoreBuilder<MissingBackend, WithStrategy<S>>
 where
-    S: PartitionStrategy,
+    S: SingleTargetPartitionStrategy,
 {
     pub fn in_memory(self) -> EventStoreBuilder<InMemoryBackend, WithStrategy<S>> {
         EventStoreBuilder {
@@ -698,7 +693,7 @@ where
 
 impl<S> EventStoreBuilder<MissingBackend, WithStrategy<S>>
 where
-    S: SingleRemotePartitionStrategy,
+    S: SingleTargetPartitionStrategy,
 {
     pub fn sqld_default(
         self,
@@ -748,7 +743,7 @@ where
 
 impl<S> EventStoreBuilder<InMemoryBackend, WithStrategy<S>>
 where
-    S: PartitionStrategy,
+    S: SingleTargetPartitionStrategy,
 {
     pub async fn open(self) -> Result<InMemoryStore<S>, Error> {
         let store = EventStore::from_catalog(
@@ -766,7 +761,7 @@ where
 
 impl<S, R> EventStoreBuilder<SqldDefaultBackend<R>, WithStrategy<S>>
 where
-    S: SingleRemotePartitionStrategy,
+    S: SingleTargetPartitionStrategy,
     R: SqldDefaultProvisioner,
 {
     pub async fn open(self) -> Result<SingleRemoteStore<S, R>, Error> {
@@ -804,7 +799,7 @@ where
 
 impl<S, R> EventStoreBuilder<TursoBackend<R>, WithStrategy<S>>
 where
-    S: SingleRemotePartitionStrategy,
+    S: SingleTargetPartitionStrategy,
     R: TursoProvisioner,
 {
     pub async fn open(self) -> Result<SingleRemoteStore<S, R>, Error> {

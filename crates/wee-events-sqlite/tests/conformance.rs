@@ -1,4 +1,4 @@
-//! Runs the conformance test suite against `EventStore`.
+//! Runs the conformance test suite against `SqliteEventStore`.
 
 use std::collections::HashSet;
 use std::num::NonZeroU32;
@@ -18,12 +18,12 @@ use wee_events::{
     Aggregate, AggregateId, ChangeSet, EventStore as EventStoreTrait, PublishOptions, RawEvent,
 };
 use wee_events_sqlite::{
-    AggregateStrategy, DatabaseTarget, Error, EventStore, GlobalStrategy, HashedStrategy,
-    InMemoryStore, LocalPartitionStrategy, LocalStore, NamedRemoteStore, NamedTargetProvisioner,
-    PartitionByStrategy, PartitionCatalog, PartitionNamingStrategy, PartitionStrategy,
-    SingleRemotePartitionStrategy, SingleRemoteStore, SingleTargetProvisioner,
+    AggregateStrategy, DatabaseTarget, Error, GlobalStrategy, HashedStrategy, InMemoryStore,
+    LocalPartitionStrategy, LocalStore, NamedRemoteStore, NamedTargetProvisioner,
+    PartitionByStrategy, PartitionCatalog, PartitionName, PartitionNamingStrategy,
+    PartitionStrategy, SingleRemoteStore, SingleTargetPartitionStrategy, SingleTargetProvisioner,
     SqldDefaultProvisioner as SqldDefaultProvisionerTrait, SqldNamespacedPartitionStrategy,
-    SqldNamespacedProvisioner, TursoProvisioner, TypeStrategy,
+    SqldNamespacedProvisioner, SqliteEventStore, TursoProvisioner, TypeStrategy,
 };
 
 macro_rules! optional_store_test_suite {
@@ -161,26 +161,6 @@ wee_events::testing::store_test_suite!(
     make_in_memory_store(GlobalStrategy).await
 );
 wee_events::testing::store_test_suite!(
-    sqlite_store_in_memory_per_type,
-    make_in_memory_store(TypeStrategy).await
-);
-wee_events::testing::store_test_suite!(
-    sqlite_store_in_memory_per_aggregate,
-    make_in_memory_store(AggregateStrategy).await
-);
-wee_events::testing::store_test_suite!(
-    sqlite_store_in_memory_hashed,
-    make_in_memory_store(HashedStrategy::new(NonZeroU32::new(8).unwrap())).await
-);
-wee_events::testing::store_test_suite!(
-    sqlite_store_in_memory_partition_by,
-    make_in_memory_store(PartitionByStrategy::new(
-        partition_by_user as fn(&AggregateId) -> String,
-    ))
-    .await
-);
-
-wee_events::testing::store_test_suite!(
     sqlite_store_local_single,
     make_local_store(GlobalStrategy).await
 );
@@ -236,11 +216,11 @@ optional_store_test_suite!(sqlite_store_turso_single, make_turso_store(GlobalStr
 
 async fn make_in_memory_store<S>(strategy: S) -> TempStore<InMemoryStore<S>>
 where
-    S: PartitionStrategy,
+    S: SingleTargetPartitionStrategy,
 {
     TempStore {
         _guard: TestStoreGuard::None,
-        store: EventStore::builder()
+        store: SqliteEventStore::builder()
             .in_memory()
             .strategy(strategy)
             .open()
@@ -254,7 +234,7 @@ where
     S: LocalPartitionStrategy + LocalStorePath,
 {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = EventStore::builder()
+    let store = SqliteEventStore::builder()
         .local(S::local_store_path(&temp_dir))
         .strategy(strategy)
         .open()
@@ -311,12 +291,12 @@ async fn make_turso_store<S>(
     strategy: S,
 ) -> TempStore<SingleRemoteStore<S, FixedRemoteTargetProvisioner>>
 where
-    S: SingleRemotePartitionStrategy,
+    S: SingleTargetPartitionStrategy,
 {
     let url = std::env::var("TURSO_DATABASE_URL").unwrap();
     let auth_token = std::env::var("TURSO_AUTH_TOKEN").unwrap();
 
-    let store = EventStore::builder()
+    let store = SqliteEventStore::builder()
         .turso(FixedRemoteTargetProvisioner { url, auth_token })
         .strategy(strategy)
         .open()
@@ -336,7 +316,7 @@ async fn open_sqld_default_store_with_retry(
     let deadline = Instant::now() + Duration::from_secs(20);
 
     loop {
-        match EventStore::builder()
+        match SqliteEventStore::builder()
             .sqld_default(provisioner.clone())
             .strategy(strategy)
             .open()
@@ -363,7 +343,7 @@ where
     let deadline = Instant::now() + Duration::from_secs(20);
 
     loop {
-        match EventStore::builder()
+        match SqliteEventStore::builder()
             .sqld_namespaced(provisioner.clone())
             .strategy(strategy.clone())
             .open()
@@ -380,7 +360,7 @@ where
     }
 }
 
-async fn wait_until_remote_store_is_ready<S, C>(store: &EventStore<S, C>)
+async fn wait_until_remote_store_is_ready<S, C>(store: &SqliteEventStore<S, C>)
 where
     S: PartitionStrategy,
     C: PartitionCatalog<S::Partition>,
@@ -532,14 +512,14 @@ impl TestSqldNamespaceProvisioner {
         }
     }
 
-    fn target_for_name(&self, name: Option<&str>) -> DatabaseTarget {
+    fn target_for_name(&self, name: PartitionName<'_>) -> DatabaseTarget {
         match name {
-            Some(name) => DatabaseTarget::SqldNamespace {
+            PartitionName::Named(name) => DatabaseTarget::SqldNamespace {
                 url: self.url.clone(),
                 auth_token: String::new(),
                 namespace: format!("partition-{}", sanitize(name)),
             },
-            None => DatabaseTarget::SqldDefault {
+            PartitionName::Default => DatabaseTarget::SqldDefault {
                 url: self.url.clone(),
                 auth_token: String::new(),
             },
@@ -548,13 +528,16 @@ impl TestSqldNamespaceProvisioner {
 }
 
 impl NamedTargetProvisioner for TestSqldNamespaceProvisioner {
-    async fn ensure_target_for_name(&self, name: Option<&str>) -> Result<DatabaseTarget, Error> {
-        let Some(name) = name else {
-            return Ok(self.target_for_name(None));
+    async fn ensure_target_for_name(
+        &self,
+        name: PartitionName<'_>,
+    ) -> Result<DatabaseTarget, Error> {
+        let PartitionName::Named(name) = name else {
+            return Ok(self.target_for_name(PartitionName::Default));
         };
 
         let namespace = format!("partition-{}", sanitize(name));
-        let target = self.target_for_name(Some(name));
+        let target = self.target_for_name(PartitionName::Named(name));
         if self.known_names.lock().unwrap().contains(name) {
             return Ok(target);
         }
@@ -593,10 +576,10 @@ impl NamedTargetProvisioner for TestSqldNamespaceProvisioner {
 
     async fn target_for_existing_name(
         &self,
-        name: Option<&str>,
+        name: PartitionName<'_>,
     ) -> Result<Option<DatabaseTarget>, Error> {
-        let Some(name) = name else {
-            return Ok(Some(self.target_for_name(None)));
+        let PartitionName::Named(name) = name else {
+            return Ok(Some(self.target_for_name(PartitionName::Default)));
         };
 
         Ok(self
@@ -604,7 +587,7 @@ impl NamedTargetProvisioner for TestSqldNamespaceProvisioner {
             .lock()
             .unwrap()
             .contains(name)
-            .then(|| self.target_for_name(Some(name))))
+            .then(|| self.target_for_name(PartitionName::Named(name))))
     }
 
     async fn names(&self) -> Result<Vec<String>, Error> {

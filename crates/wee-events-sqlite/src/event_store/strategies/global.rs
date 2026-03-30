@@ -5,14 +5,15 @@ use wee_events::{AggregateId, AggregateType};
 use crate::Error;
 
 use super::{
-    LocalPartitionLayout, LocalPartitionStrategy, PartitionNamingStrategy, PartitionRead,
-    PartitionStrategy, SingleRemotePartitionStrategy, SqldNamespacedPartitionStrategy,
+    LocalPartitionLayout, LocalPartitionStrategy, PartitionName, PartitionNamingStrategy,
+    PartitionRead, PartitionStrategy, SingleTargetPartitionStrategy,
+    SqldNamespacedPartitionStrategy,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GlobalStrategy;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GlobalPartition;
 
 impl PartitionStrategy for GlobalStrategy {
@@ -43,8 +44,8 @@ impl PartitionStrategy for GlobalStrategy {
 }
 
 impl PartitionNamingStrategy for GlobalStrategy {
-    fn partition_name<'a>(&self, _partition: &'a Self::Partition) -> Option<&'a str> {
-        None
+    fn partition_name<'a>(&self, _partition: &'a Self::Partition) -> PartitionName<'a> {
+        PartitionName::Default
     }
 
     fn partition_from_name(&self, name: &str) -> Result<Self::Partition, Error> {
@@ -64,6 +65,6 @@ impl LocalPartitionStrategy for GlobalStrategy {
     }
 }
 
-impl SingleRemotePartitionStrategy for GlobalStrategy {}
+impl SingleTargetPartitionStrategy for GlobalStrategy {}
 
 impl SqldNamespacedPartitionStrategy for GlobalStrategy {}

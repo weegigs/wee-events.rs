@@ -1,12 +1,12 @@
 use serde::Serialize;
 use wee_events::{AggregateType, ChangeSet, EventStore as _, Renderer};
 
-use crate::{DocumentStore, Error, EventStore as SqlEventStore};
+use crate::{DocumentStore, Error, SqliteEventStore};
 
 /// Applies a projection for a single aggregate after publish.
 pub async fn apply_projection<S: Default + Serialize>(
     renderer: &Renderer<S>,
-    event_store: &SqlEventStore,
+    event_store: &SqliteEventStore,
     document_store: &DocumentStore,
     changeset: &ChangeSet,
     collection: &str,
@@ -30,7 +30,7 @@ pub async fn apply_projection<S: Default + Serialize>(
 /// Rebuilds all projections for a given aggregate type.
 pub async fn rebuild_projection<S: Default + Serialize>(
     renderer: &Renderer<S>,
-    event_store: &SqlEventStore,
+    event_store: &SqliteEventStore,
     document_store: &DocumentStore,
     collection: &str,
     aggregate_type: &AggregateType,

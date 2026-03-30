@@ -25,9 +25,15 @@ pub enum PartitionRead {
     Skip,
 }
 
-pub trait PartitionKey: Clone + Debug + Eq + Hash + Send + Sync + 'static {}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartitionName<'a> {
+    Default,
+    Named(&'a str),
+}
 
-impl<T> PartitionKey for T where T: Clone + Debug + Eq + Hash + Send + Sync + 'static {}
+pub trait PartitionKey: Clone + Debug + Eq + Ord + Hash + Send + Sync + 'static {}
+
+impl<T> PartitionKey for T where T: Clone + Debug + Eq + Ord + Hash + Send + Sync + 'static {}
 
 pub trait PartitionStrategy: Clone + Send + Sync + 'static {
     type Partition: PartitionKey;
@@ -58,7 +64,7 @@ pub trait PartitionStrategy: Clone + Send + Sync + 'static {
 ///
 /// A partition name does not imply anything about on-disk filenames.
 pub trait PartitionNamingStrategy: PartitionStrategy {
-    fn partition_name<'a>(&self, partition: &'a Self::Partition) -> Option<&'a str>;
+    fn partition_name<'a>(&self, partition: &'a Self::Partition) -> PartitionName<'a>;
 
     fn partition_from_name(&self, name: &str) -> Result<Self::Partition, Error>;
 }
@@ -73,7 +79,7 @@ pub trait LocalPartitionStrategy: PartitionNamingStrategy {
     fn local_partition_layout(&self) -> LocalPartitionLayout;
 }
 
-pub trait SingleRemotePartitionStrategy: PartitionStrategy {}
+pub trait SingleTargetPartitionStrategy: PartitionStrategy {}
 
 pub trait SqldNamespacedPartitionStrategy: PartitionStrategy {}
 
@@ -85,7 +91,7 @@ pub enum LocalPartitionLayout {
     NamedDatabases,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NamedPartition<T> {
     name: String,
     key: T,

@@ -5,7 +5,7 @@ use data_encoding::BASE32_NOPAD;
 use crate::Error;
 
 use super::super::partitioning::PartitionCatalog;
-use super::super::strategies::{LocalPartitionLayout, LocalPartitionStrategy};
+use super::super::strategies::{LocalPartitionLayout, LocalPartitionStrategy, PartitionName};
 use super::super::types::DatabaseTarget;
 
 #[derive(Debug)]
@@ -27,11 +27,15 @@ where
         match self.strategy.local_partition_layout() {
             LocalPartitionLayout::SingleDatabase => Ok(self.root.clone()),
             LocalPartitionLayout::NamedDatabases => {
-                let name = self.strategy.partition_name(partition).ok_or_else(|| {
-                    Error::Configuration(
-                        "named local partition strategy returned no partition name".to_string(),
-                    )
-                })?;
+                let name = match self.strategy.partition_name(partition) {
+                    PartitionName::Named(name) => name,
+                    PartitionName::Default => {
+                        return Err(Error::Configuration(
+                            "named local partition strategy returned the default partition"
+                                .to_string(),
+                        ))
+                    }
+                };
                 Ok(self
                     .root
                     .join(format!("{}.db", encode_path_component(name))))

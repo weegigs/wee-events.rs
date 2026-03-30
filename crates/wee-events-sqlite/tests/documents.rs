@@ -8,8 +8,8 @@ use wee_events::{
     ReduceFn, Renderer, Revision,
 };
 use wee_events_sqlite::{
-    AggregateStrategy, DocumentStore, EventStore, GlobalStrategy, HashedStrategy,
-    LocalPartitionStrategy, PartitionByStrategy, TypeStrategy,
+    AggregateStrategy, DocumentStore, GlobalStrategy, HashedStrategy, LocalPartitionStrategy,
+    PartitionByStrategy, SqliteEventStore, TypeStrategy,
 };
 
 trait LocalStorePath {
@@ -62,7 +62,7 @@ async fn test_document_store() -> DocumentStore {
 struct SharedStores {
     event_db_path: PathBuf,
     document_db_path: PathBuf,
-    event_store: EventStore,
+    event_store: SqliteEventStore,
     document_store: DocumentStore,
 }
 
@@ -75,7 +75,7 @@ impl SharedStores {
             "wee-events-sqlite-documents-{}.db",
             ulid::Ulid::new()
         ));
-        let event_store = EventStore::builder()
+        let event_store = SqliteEventStore::builder()
             .local(&event_db_path)
             .strategy(GlobalStrategy)
             .open()
@@ -316,7 +316,7 @@ async fn event_store_open_only_creates_event_schema() {
         "wee-events-sqlite-events-only-{}.db",
         ulid::Ulid::new()
     ));
-    let _store = EventStore::builder()
+    let _store = SqliteEventStore::builder()
         .local(&db_path)
         .strategy(GlobalStrategy)
         .open()
@@ -372,7 +372,7 @@ where
     S: LocalPartitionStrategy + LocalStorePath,
 {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = EventStore::builder()
+    let store = SqliteEventStore::builder()
         .local(S::local_store_path(&temp_dir))
         .strategy(strategy)
         .open()
@@ -404,7 +404,7 @@ where
     S: LocalPartitionStrategy + LocalStorePath,
 {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = EventStore::builder()
+    let store = SqliteEventStore::builder()
         .local(S::local_store_path(&temp_dir))
         .strategy(strategy)
         .open()

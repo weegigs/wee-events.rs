@@ -5,8 +5,8 @@ use wee_events::{AggregateId, AggregateType};
 use crate::Error;
 
 use super::{
-    LocalPartitionLayout, LocalPartitionStrategy, NamedPartition, PartitionNamingStrategy,
-    PartitionRead, PartitionStrategy, SqldNamespacedPartitionStrategy,
+    LocalPartitionLayout, LocalPartitionStrategy, NamedPartition, PartitionName,
+    PartitionNamingStrategy, PartitionRead, PartitionStrategy, SqldNamespacedPartitionStrategy,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -45,8 +45,8 @@ impl PartitionStrategy for AggregateStrategy {
 }
 
 impl PartitionNamingStrategy for AggregateStrategy {
-    fn partition_name<'a>(&self, partition: &'a Self::Partition) -> Option<&'a str> {
-        Some(partition.name())
+    fn partition_name<'a>(&self, partition: &'a Self::Partition) -> PartitionName<'a> {
+        PartitionName::Named(partition.name())
     }
 
     fn partition_from_name(&self, name: &str) -> Result<Self::Partition, Error> {

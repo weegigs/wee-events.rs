@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use crate::Error;
 
 pub use super::partitioning::PartitionCatalog;
+use super::strategies::PartitionName;
 
 /// A concrete database target for a partition.
 #[derive(Clone, PartialEq, Eq)]
@@ -70,14 +71,17 @@ pub trait NamedTargetProvisioner: Send + Sync {
     /// The partition name is a logical identifier supplied by
     /// `PartitionNamingStrategy`. Backends are free to translate that name
     /// into whatever concrete addressing scheme they need, such as a namespace.
-    async fn ensure_target_for_name(&self, name: Option<&str>) -> Result<DatabaseTarget, Error>;
+    async fn ensure_target_for_name(
+        &self,
+        name: PartitionName<'_>,
+    ) -> Result<DatabaseTarget, Error>;
 
     /// Returns a target for a stable partition name if it already exists.
     ///
     /// This should avoid creating new storage as a side effect.
     async fn target_for_existing_name(
         &self,
-        name: Option<&str>,
+        name: PartitionName<'_>,
     ) -> Result<Option<DatabaseTarget>, Error>;
 
     /// Enumerates partition names known to this provisioner.

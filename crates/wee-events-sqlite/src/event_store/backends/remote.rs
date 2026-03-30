@@ -1,7 +1,7 @@
 use crate::Error;
 
 use super::super::partitioning::PartitionCatalog;
-use super::super::strategies::PartitionNamingStrategy;
+use super::super::strategies::{PartitionName, PartitionNamingStrategy};
 use super::super::types::{DatabaseTarget, NamedTargetProvisioner, SingleTargetProvisioner};
 
 pub struct SingleTargetCatalog<P, R> {
@@ -86,9 +86,14 @@ where
             self.strategy
                 .bootstrap_partitions()
                 .into_iter()
-                .filter(|partition| self.strategy.partition_name(partition).is_none()),
+                .filter(|partition| {
+                    matches!(
+                        self.strategy.partition_name(partition),
+                        PartitionName::Default
+                    )
+                }),
         );
-        partitions.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+        partitions.sort();
         partitions.dedup();
         Ok(partitions)
     }

@@ -118,7 +118,7 @@ impl From<&str> for Revision {
 ///
 /// This format is safe for use in URLs, path segments, and query parameters.
 /// The `Display` → `FromStr` round-trip is guaranteed.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct AggregateId {
     pub aggregate_type: AggregateType,
     pub aggregate_key: String,
