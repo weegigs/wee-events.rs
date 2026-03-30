@@ -1,12 +1,13 @@
 use std::num::NonZeroU32;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use wee_events::{AggregateId, AggregateType};
 
 use crate::Error;
 
 use super::{
-    NamedPartition, SqliteLocalPartitionStrategy, SqlitePartitionRead, SqlitePartitionStrategy,
+    NamedPartition, SqliteLocalPartitionLayout, SqliteLocalPartitionStrategy,
+    SqlitePartitionNamingStrategy, SqlitePartitionRead, SqlitePartitionStrategy,
     SqliteSqldNamespacedPartitionStrategy,
 };
 
@@ -51,41 +52,31 @@ impl SqlitePartitionStrategy for HashedStrategy {
     }
 }
 
+impl SqlitePartitionNamingStrategy for HashedStrategy {
+    fn partition_name<'a>(&self, partition: &'a Self::Partition) -> Option<&'a str> {
+        Some(partition.name())
+    }
+
+    fn partition_from_name(&self, name: &str) -> Result<Self::Partition, Error> {
+        let bucket = name
+            .strip_prefix("bucket-")
+            .ok_or_else(|| Error::Configuration(format!("invalid hashed partition name '{name}'")))?
+            .parse::<u32>()
+            .map_err(|error| {
+                Error::Configuration(format!("invalid hashed partition name '{name}': {error}"))
+            })?;
+        Ok(BucketPartition::new(format!("bucket-{bucket}"), bucket))
+    }
+}
+
 impl SqliteLocalPartitionStrategy for HashedStrategy {
     fn initialize_root(&self, root: &Path) -> Result<(), Error> {
         std::fs::create_dir_all(root)?;
         Ok(())
     }
 
-    fn path_for_partition(
-        &self,
-        root: &Path,
-        partition: &Self::Partition,
-    ) -> Result<PathBuf, Error> {
-        Ok(root.join(format!("{}.db", partition.name())))
-    }
-
-    fn discover_partitions(&self, root: &Path) -> Result<Vec<Self::Partition>, Error> {
-        let mut partitions = Vec::new();
-        for entry in std::fs::read_dir(root)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().is_none_or(|extension| extension != "db") {
-                continue;
-            }
-            let Some(stem) = path.file_stem() else {
-                continue;
-            };
-            let stem = stem.to_string_lossy();
-            let Some(bucket) = stem.strip_prefix("bucket-") else {
-                continue;
-            };
-            let Ok(bucket) = bucket.parse::<u32>() else {
-                continue;
-            };
-            partitions.push(BucketPartition::new(format!("bucket-{bucket}"), bucket));
-        }
-        Ok(partitions)
+    fn local_partition_layout(&self) -> SqliteLocalPartitionLayout {
+        SqliteLocalPartitionLayout::NamedDatabases
     }
 }
 

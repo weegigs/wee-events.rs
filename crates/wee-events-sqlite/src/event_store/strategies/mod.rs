@@ -1,8 +1,6 @@
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::path::{Path, PathBuf};
-
-use data_encoding::BASE32_NOPAD;
+use std::path::Path;
 use wee_events::{AggregateId, AggregateType};
 
 use crate::Error;
@@ -50,21 +48,42 @@ pub trait SqlitePartitionStrategy: Clone + Send + Sync + 'static {
     ) -> SqlitePartitionRead;
 }
 
-pub trait SqliteLocalPartitionStrategy: SqlitePartitionStrategy {
+/// Adds a stable backend-facing name for a logical partition.
+///
+/// The name is a logical identifier, not a storage format. Different backends
+/// can realize the same partition name differently:
+/// - local: partition name -> encoded file path
+/// - sqld namespaced: partition name -> namespace
+/// - other backends may use the name as an in-process routing key
+///
+/// A partition name does not imply anything about on-disk filenames.
+pub trait SqlitePartitionNamingStrategy: SqlitePartitionStrategy {
+    fn partition_name<'a>(&self, partition: &'a Self::Partition) -> Option<&'a str>;
+
+    fn partition_from_name(&self, name: &str) -> Result<Self::Partition, Error>;
+}
+
+/// Partition strategy behavior needed by the local filesystem-backed catalog.
+///
+/// Local storage uses `partition_name()` plus the layout to derive concrete file
+/// paths. Strategies do not encode filenames themselves.
+pub trait SqliteLocalPartitionStrategy: SqlitePartitionNamingStrategy {
     fn initialize_root(&self, root: &Path) -> Result<(), Error>;
 
-    fn path_for_partition(
-        &self,
-        root: &Path,
-        partition: &Self::Partition,
-    ) -> Result<PathBuf, Error>;
-
-    fn discover_partitions(&self, root: &Path) -> Result<Vec<Self::Partition>, Error>;
+    fn local_partition_layout(&self) -> SqliteLocalPartitionLayout;
 }
 
 pub trait SqliteSingleRemotePartitionStrategy: SqlitePartitionStrategy {}
 
 pub trait SqliteSqldNamespacedPartitionStrategy: SqlitePartitionStrategy {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqliteLocalPartitionLayout {
+    /// A single database file at the configured root path.
+    SingleDatabase,
+    /// One database file per logical partition name.
+    NamedDatabases,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NamedPartition<T> {
@@ -73,6 +92,7 @@ pub struct NamedPartition<T> {
 }
 
 impl<T> NamedPartition<T> {
+    /// Creates a partition with both a stable backend-facing name and a typed key.
     pub fn new(name: impl Into<String>, key: T) -> Self {
         Self {
             name: name.into(),
@@ -91,32 +111,4 @@ impl<T> NamedPartition<T> {
     pub fn into_key(self) -> T {
         self.key
     }
-}
-
-const ENCODED_PATH_PREFIX: &str = "b32-";
-
-pub(super) fn encode_path_component(value: &str) -> String {
-    let encoded_value = BASE32_NOPAD.encode(value.as_bytes());
-    let mut encoded = String::with_capacity(ENCODED_PATH_PREFIX.len() + encoded_value.len());
-    encoded.push_str(ENCODED_PATH_PREFIX);
-    encoded.push_str(&encoded_value);
-    encoded
-}
-
-pub(super) fn decode_path_component(value: &str) -> Result<String, Error> {
-    let encoded = value.strip_prefix(ENCODED_PATH_PREFIX).ok_or_else(|| {
-        Error::Configuration(format!("invalid encoded partition path component: {value}"))
-    })?;
-
-    let bytes = BASE32_NOPAD.decode(encoded.as_bytes()).map_err(|error| {
-        Error::Configuration(format!(
-            "invalid encoded partition path component '{value}': {error}"
-        ))
-    })?;
-
-    String::from_utf8(bytes).map_err(|error| {
-        Error::Configuration(format!(
-            "invalid utf-8 in encoded partition path component '{value}': {error}"
-        ))
-    })
 }

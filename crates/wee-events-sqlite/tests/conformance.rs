@@ -1,7 +1,6 @@
 //! Runs the conformance test suite against `SqliteEventStore`.
 
 use std::collections::HashSet;
-use std::marker::PhantomData;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -18,13 +17,13 @@ use tokio::sync::OnceCell;
 use tokio::time::sleep;
 use wee_events::{Aggregate, AggregateId, ChangeSet, EventStore, PublishOptions, RawEvent};
 use wee_events_sqlite::{
-    AggregatePartition, AggregateStrategy, BucketPartition, Error, GlobalPartition, GlobalStrategy,
-    HashedStrategy, NamedPartition, PartitionByStrategy, SqliteDatabaseTarget, SqliteEventStore,
-    SqliteInMemoryStore, SqliteLocalPartitionStrategy, SqliteLocalStore, SqlitePartitionCatalog,
-    SqlitePartitionStrategy, SqliteRemoteStore, SqliteSingleRemotePartitionStrategy,
-    SqliteSqldDefaultProvisioner, SqliteSqldNamespacedPartitionStrategy,
-    SqliteSqldNamespacedProvisioner, SqliteTargetProvisioner, SqliteTursoProvisioner,
-    TypePartition, TypeStrategy,
+    AggregateStrategy, Error, GlobalStrategy, HashedStrategy, PartitionByStrategy,
+    SqliteDatabaseTarget, SqliteEventStore, SqliteInMemoryStore, SqliteLocalPartitionStrategy,
+    SqliteLocalStore, SqliteNamedRemoteStore, SqliteNamedTargetProvisioner, SqlitePartitionCatalog,
+    SqlitePartitionNamingStrategy, SqlitePartitionStrategy, SqliteSingleRemotePartitionStrategy,
+    SqliteSingleRemoteStore, SqliteSingleTargetProvisioner, SqliteSqldDefaultProvisioner,
+    SqliteSqldNamespacedPartitionStrategy, SqliteSqldNamespacedProvisioner, SqliteTursoProvisioner,
+    TypeStrategy,
 };
 
 macro_rules! optional_store_test_suite {
@@ -272,16 +271,13 @@ where
 
 async fn make_remote_sqld_store<S>(
     strategy: S,
-) -> TempStore<SqliteRemoteStore<S, SqldNamespaceProvisioner<S::Partition>>>
+) -> TempStore<SqliteNamedRemoteStore<S, SqldNamespaceProvisioner>>
 where
-    S: SqliteSqldNamespacedPartitionStrategy,
-    S::Partition: PartitionNamespace,
+    S: SqliteSqldNamespacedPartitionStrategy + SqlitePartitionNamingStrategy,
 {
     let instance = shared_sqld_instance().await;
-    let provisioner = SqldNamespaceProvisioner::<S::Partition>::new(
-        instance.url.clone(),
-        instance.admin_url.clone(),
-    );
+    let provisioner =
+        SqldNamespaceProvisioner::new(instance.url.clone(), instance.admin_url.clone());
 
     let store = open_sqld_store_with_retry(strategy, provisioner).await;
     wait_until_remote_store_is_ready(&store).await;
@@ -294,7 +290,7 @@ where
 
 async fn make_remote_sqld_default_store(
     strategy: GlobalStrategy,
-) -> TempStore<SqliteRemoteStore<GlobalStrategy, SqldDefaultProvisioner>> {
+) -> TempStore<SqliteSingleRemoteStore<GlobalStrategy, SqldDefaultProvisioner>> {
     let instance = shared_sqld_instance().await;
     let store = open_sqld_default_store_with_retry(
         strategy,
@@ -313,7 +309,7 @@ async fn make_remote_sqld_default_store(
 
 async fn make_turso_store<S>(
     strategy: S,
-) -> TempStore<SqliteRemoteStore<S, FixedRemoteTargetProvisioner<S::Partition>>>
+) -> TempStore<SqliteSingleRemoteStore<S, FixedRemoteTargetProvisioner>>
 where
     S: SqliteSingleRemotePartitionStrategy,
 {
@@ -321,11 +317,7 @@ where
     let auth_token = std::env::var("TURSO_AUTH_TOKEN").unwrap();
 
     let store = SqliteEventStore::builder()
-        .turso(FixedRemoteTargetProvisioner::<S::Partition> {
-            url,
-            auth_token,
-            _marker: PhantomData,
-        })
+        .turso(FixedRemoteTargetProvisioner { url, auth_token })
         .strategy(strategy)
         .open()
         .await
@@ -340,7 +332,7 @@ where
 async fn open_sqld_default_store_with_retry(
     strategy: GlobalStrategy,
     provisioner: SqldDefaultProvisioner,
-) -> SqliteRemoteStore<GlobalStrategy, SqldDefaultProvisioner> {
+) -> SqliteSingleRemoteStore<GlobalStrategy, SqldDefaultProvisioner> {
     let deadline = Instant::now() + Duration::from_secs(20);
 
     loop {
@@ -363,11 +355,10 @@ async fn open_sqld_default_store_with_retry(
 
 async fn open_sqld_store_with_retry<S>(
     strategy: S,
-    provisioner: SqldNamespaceProvisioner<S::Partition>,
-) -> SqliteRemoteStore<S, SqldNamespaceProvisioner<S::Partition>>
+    provisioner: SqldNamespaceProvisioner,
+) -> SqliteNamedRemoteStore<S, SqldNamespaceProvisioner>
 where
-    S: SqliteSqldNamespacedPartitionStrategy,
-    S::Partition: PartitionNamespace,
+    S: SqliteSqldNamespacedPartitionStrategy + SqlitePartitionNamingStrategy,
 {
     let deadline = Instant::now() + Duration::from_secs(20);
 
@@ -485,21 +476,15 @@ struct SqldDefaultProvisioner {
 }
 
 #[async_trait]
-impl SqliteTargetProvisioner<GlobalPartition> for SqldDefaultProvisioner {
-    async fn ensure_target_for_partition(
-        &self,
-        _partition: &GlobalPartition,
-    ) -> Result<SqliteDatabaseTarget, Error> {
+impl SqliteSingleTargetProvisioner for SqldDefaultProvisioner {
+    async fn ensure_target(&self) -> Result<SqliteDatabaseTarget, Error> {
         Ok(SqliteDatabaseTarget::SqldDefault {
             url: self.url.clone(),
             auth_token: String::new(),
         })
     }
 
-    async fn target_for_existing_partition(
-        &self,
-        _partition: &GlobalPartition,
-    ) -> Result<Option<SqliteDatabaseTarget>, Error> {
+    async fn existing_target(&self) -> Result<Option<SqliteDatabaseTarget>, Error> {
         Ok(Some(SqliteDatabaseTarget::SqldDefault {
             url: self.url.clone(),
             auth_token: String::new(),
@@ -507,34 +492,24 @@ impl SqliteTargetProvisioner<GlobalPartition> for SqldDefaultProvisioner {
     }
 }
 
-impl SqliteSqldDefaultProvisioner<GlobalPartition> for SqldDefaultProvisioner {}
+impl SqliteSqldDefaultProvisioner for SqldDefaultProvisioner {}
 
 #[derive(Debug, Clone)]
-struct FixedRemoteTargetProvisioner<P> {
+struct FixedRemoteTargetProvisioner {
     url: String,
     auth_token: String,
-    _marker: PhantomData<P>,
 }
 
 #[async_trait]
-impl<P> SqliteTargetProvisioner<P> for FixedRemoteTargetProvisioner<P>
-where
-    P: Clone + Send + Sync + 'static,
-{
-    async fn ensure_target_for_partition(
-        &self,
-        _partition: &P,
-    ) -> Result<SqliteDatabaseTarget, Error> {
+impl SqliteSingleTargetProvisioner for FixedRemoteTargetProvisioner {
+    async fn ensure_target(&self) -> Result<SqliteDatabaseTarget, Error> {
         Ok(SqliteDatabaseTarget::Turso {
             url: self.url.clone(),
             auth_token: self.auth_token.clone(),
         })
     }
 
-    async fn target_for_existing_partition(
-        &self,
-        _partition: &P,
-    ) -> Result<Option<SqliteDatabaseTarget>, Error> {
+    async fn existing_target(&self) -> Result<Option<SqliteDatabaseTarget>, Error> {
         Ok(Some(SqliteDatabaseTarget::Turso {
             url: self.url.clone(),
             auth_token: self.auth_token.clone(),
@@ -542,38 +517,32 @@ where
     }
 }
 
-impl<P> SqliteTursoProvisioner<P> for FixedRemoteTargetProvisioner<P> where
-    P: Clone + Send + Sync + 'static
-{
-}
+impl SqliteTursoProvisioner for FixedRemoteTargetProvisioner {}
 
 #[derive(Debug, Clone)]
-struct SqldNamespaceProvisioner<P> {
+struct SqldNamespaceProvisioner {
     url: String,
     admin_url: String,
-    known_partitions: Arc<Mutex<HashSet<P>>>,
+    known_names: Arc<Mutex<HashSet<String>>>,
     client: reqwest::Client,
 }
 
-impl<P> SqldNamespaceProvisioner<P>
-where
-    P: PartitionNamespace,
-{
+impl SqldNamespaceProvisioner {
     fn new(url: String, admin_url: String) -> Self {
         Self {
             url,
             admin_url,
-            known_partitions: Arc::new(Mutex::new(HashSet::new())),
+            known_names: Arc::new(Mutex::new(HashSet::new())),
             client: reqwest::Client::new(),
         }
     }
 
-    fn target_for_partition(&self, partition: &P) -> SqliteDatabaseTarget {
-        match partition.namespace() {
-            Some(namespace) => SqliteDatabaseTarget::SqldNamespace {
+    fn target_for_name(&self, name: Option<&str>) -> SqliteDatabaseTarget {
+        match name {
+            Some(name) => SqliteDatabaseTarget::SqldNamespace {
                 url: self.url.clone(),
                 auth_token: String::new(),
-                namespace,
+                namespace: format!("partition-{}", sanitize(name)),
             },
             None => SqliteDatabaseTarget::SqldDefault {
                 url: self.url.clone(),
@@ -584,21 +553,21 @@ where
 }
 
 #[async_trait]
-impl<P> SqliteTargetProvisioner<P> for SqldNamespaceProvisioner<P>
-where
-    P: PartitionNamespace,
-{
-    async fn ensure_target_for_partition(
+impl SqliteNamedTargetProvisioner for SqldNamespaceProvisioner {
+    async fn ensure_target_for_name(
         &self,
-        partition: &P,
+        name: Option<&str>,
     ) -> Result<SqliteDatabaseTarget, Error> {
-        if partition.namespace().is_none() {
-            return Ok(self.target_for_partition(partition));
+        let Some(name) = name else {
+            return Ok(self.target_for_name(None));
+        };
+
+        let namespace = format!("partition-{}", sanitize(name));
+        let target = self.target_for_name(Some(name));
+        if self.known_names.lock().unwrap().contains(name) {
+            return Ok(target);
         }
 
-        let namespace = partition
-            .namespace()
-            .expect("namespace is present because global partitions return early");
         let response = self
             .client
             .post(format!(
@@ -627,44 +596,32 @@ where
             )));
         }
 
-        self.known_partitions
-            .lock()
-            .unwrap()
-            .insert(partition.clone());
-        Ok(self.target_for_partition(partition))
+        self.known_names.lock().unwrap().insert(name.to_string());
+        Ok(target)
     }
 
-    async fn target_for_existing_partition(
+    async fn target_for_existing_name(
         &self,
-        partition: &P,
+        name: Option<&str>,
     ) -> Result<Option<SqliteDatabaseTarget>, Error> {
-        if partition.namespace().is_none() {
-            return Ok(Some(self.target_for_partition(partition)));
-        }
+        let Some(name) = name else {
+            return Ok(Some(self.target_for_name(None)));
+        };
 
         Ok(self
-            .known_partitions
+            .known_names
             .lock()
             .unwrap()
-            .contains(partition)
-            .then(|| self.target_for_partition(partition)))
+            .contains(name)
+            .then(|| self.target_for_name(Some(name))))
     }
 
-    async fn partitions(&self) -> Result<Vec<P>, Error> {
-        Ok(self
-            .known_partitions
-            .lock()
-            .unwrap()
-            .iter()
-            .cloned()
-            .collect())
+    async fn names(&self) -> Result<Vec<String>, Error> {
+        Ok(self.known_names.lock().unwrap().iter().cloned().collect())
     }
 }
 
-impl<P> SqliteSqldNamespacedProvisioner<P> for SqldNamespaceProvisioner<P> where
-    P: PartitionNamespace
-{
-}
+impl SqliteSqldNamespacedProvisioner for SqldNamespaceProvisioner {}
 
 trait LocalStorePath {
     fn local_store_path(temp_dir: &tempfile::TempDir) -> PathBuf;
@@ -700,10 +657,6 @@ impl LocalStorePath for PartitionByStrategy<fn(&AggregateId) -> String> {
     }
 }
 
-trait PartitionNamespace: Clone + Eq + std::hash::Hash + Send + Sync + 'static {
-    fn namespace(&self) -> Option<String>;
-}
-
 fn partition_by_user(aggregate_id: &AggregateId) -> String {
     aggregate_id
         .aggregate_key
@@ -711,40 +664,6 @@ fn partition_by_user(aggregate_id: &AggregateId) -> String {
         .next()
         .expect("split always yields at least one segment")
         .to_string()
-}
-
-impl PartitionNamespace for GlobalPartition {
-    fn namespace(&self) -> Option<String> {
-        None
-    }
-}
-
-impl PartitionNamespace for TypePartition {
-    fn namespace(&self) -> Option<String> {
-        Some(format!("type-{}", sanitize(self.key().as_str())))
-    }
-}
-
-impl PartitionNamespace for BucketPartition {
-    fn namespace(&self) -> Option<String> {
-        Some(format!("bucket-{}", self.key()))
-    }
-}
-
-impl PartitionNamespace for AggregatePartition {
-    fn namespace(&self) -> Option<String> {
-        Some(format!(
-            "agg-{}-{}",
-            sanitize(self.key().aggregate_type.as_str()),
-            sanitize(&self.key().aggregate_key)
-        ))
-    }
-}
-
-impl PartitionNamespace for NamedPartition<String> {
-    fn namespace(&self) -> Option<String> {
-        Some(format!("partition-{}", sanitize(self.name())))
-    }
 }
 
 fn sanitize(input: &str) -> String {

@@ -14,10 +14,13 @@ use wee_events::{
 
 use crate::{database, Error};
 
-use super::backends::{InMemoryTargetResolver, LocalPartitionCatalog, ResolverPartitionCatalog};
+use super::backends::{
+    InMemoryTargetResolver, LocalPartitionCatalog, NamedTargetCatalog, SingleTargetCatalog,
+};
 use super::strategies::{
-    GlobalStrategy, SqliteLocalPartitionStrategy, SqlitePartitionRead, SqlitePartitionStrategy,
-    SqliteSingleRemotePartitionStrategy, SqliteSqldNamespacedPartitionStrategy,
+    GlobalStrategy, SqliteLocalPartitionStrategy, SqlitePartitionNamingStrategy,
+    SqlitePartitionRead, SqlitePartitionStrategy, SqliteSingleRemotePartitionStrategy,
+    SqliteSqldNamespacedPartitionStrategy,
 };
 use super::types::{
     SqlitePartitionCatalog, SqliteSqldDefaultProvisioner, SqliteSqldNamespacedProvisioner,
@@ -42,13 +45,12 @@ where
 pub type SqliteLocalStore<S> = SqliteEventStore<S, LocalPartitionCatalog<S>>;
 pub type SqliteInMemoryStore<S> = SqliteEventStore<
     S,
-    ResolverPartitionCatalog<
-        <S as SqlitePartitionStrategy>::Partition,
-        InMemoryTargetResolver<<S as SqlitePartitionStrategy>::Partition>,
-    >,
+    SingleTargetCatalog<<S as SqlitePartitionStrategy>::Partition, InMemoryTargetResolver>,
 >;
-pub type SqliteRemoteStore<S, R> =
-    SqliteEventStore<S, ResolverPartitionCatalog<<S as SqlitePartitionStrategy>::Partition, R>>;
+pub type SqliteSingleRemoteStore<S, R> =
+    SqliteEventStore<S, SingleTargetCatalog<<S as SqlitePartitionStrategy>::Partition, R>>;
+pub type SqliteNamedRemoteStore<S, R> = SqliteEventStore<S, NamedTargetCatalog<S, R>>;
+pub type SqliteRemoteStore<S, C> = SqliteEventStore<S, C>;
 
 impl SqliteEventStore<GlobalStrategy, LocalPartitionCatalog<GlobalStrategy>> {
     pub fn builder() -> SqliteEventStoreBuilder<MissingBackend, MissingStrategy<()>> {
@@ -532,6 +534,12 @@ impl SqliteEventStoreBuilder<MissingBackend, MissingStrategy<()>> {
         }
     }
 
+    /// Configures an ephemeral in-memory backend.
+    ///
+    /// This backend is still partition-aware: non-global strategies create one
+    /// in-memory SQLite connection per logical partition. Those partitions are
+    /// tracked in-process by the store; they are not converted into external
+    /// names or on-disk files.
     pub fn in_memory(self) -> SqliteEventStoreBuilder<InMemoryBackend, MissingStrategy<()>> {
         SqliteEventStoreBuilder {
             backend: InMemoryBackend,
@@ -539,12 +547,12 @@ impl SqliteEventStoreBuilder<MissingBackend, MissingStrategy<()>> {
         }
     }
 
-    pub fn sqld_default<R, P>(
+    pub fn sqld_default<R>(
         self,
         provisioner: R,
-    ) -> SqliteEventStoreBuilder<SqldDefaultBackend<R>, MissingStrategy<P>>
+    ) -> SqliteEventStoreBuilder<SqldDefaultBackend<R>, MissingStrategy<()>>
     where
-        R: SqliteSqldDefaultProvisioner<P>,
+        R: SqliteSqldDefaultProvisioner,
     {
         SqliteEventStoreBuilder {
             backend: SqldDefaultBackend { provisioner },
@@ -552,12 +560,17 @@ impl SqliteEventStoreBuilder<MissingBackend, MissingStrategy<()>> {
         }
     }
 
-    pub fn sqld_namespaced<R, P>(
+    /// Configures a namespaced sqld backend.
+    ///
+    /// Strategies used with this backend must provide stable partition names.
+    /// The provisioner is responsible for mapping those names to sqld
+    /// namespaces.
+    pub fn sqld_namespaced<R>(
         self,
         provisioner: R,
-    ) -> SqliteEventStoreBuilder<SqldNamespacedBackend<R>, MissingStrategy<P>>
+    ) -> SqliteEventStoreBuilder<SqldNamespacedBackend<R>, MissingStrategy<()>>
     where
-        R: SqliteSqldNamespacedProvisioner<P>,
+        R: SqliteSqldNamespacedProvisioner,
     {
         SqliteEventStoreBuilder {
             backend: SqldNamespacedBackend { provisioner },
@@ -565,12 +578,12 @@ impl SqliteEventStoreBuilder<MissingBackend, MissingStrategy<()>> {
         }
     }
 
-    pub fn turso<R, P>(
+    pub fn turso<R>(
         self,
         provisioner: R,
-    ) -> SqliteEventStoreBuilder<TursoBackend<R>, MissingStrategy<P>>
+    ) -> SqliteEventStoreBuilder<TursoBackend<R>, MissingStrategy<()>>
     where
-        R: SqliteTursoProvisioner<P>,
+        R: SqliteTursoProvisioner,
     {
         SqliteEventStoreBuilder {
             backend: TursoBackend { provisioner },
@@ -619,16 +632,16 @@ impl SqliteEventStoreBuilder<InMemoryBackend, MissingStrategy<()>> {
     }
 }
 
-impl<R, P> SqliteEventStoreBuilder<SqldDefaultBackend<R>, MissingStrategy<P>>
+impl<R> SqliteEventStoreBuilder<SqldDefaultBackend<R>, MissingStrategy<()>>
 where
-    R: SqliteSqldDefaultProvisioner<P>,
+    R: SqliteSqldDefaultProvisioner,
 {
     pub fn strategy<S>(
         self,
         strategy: S,
     ) -> SqliteEventStoreBuilder<SqldDefaultBackend<R>, WithStrategy<S>>
     where
-        S: SqliteSingleRemotePartitionStrategy<Partition = P>,
+        S: SqliteSingleRemotePartitionStrategy,
     {
         SqliteEventStoreBuilder {
             backend: self.backend,
@@ -637,16 +650,16 @@ where
     }
 }
 
-impl<R, P> SqliteEventStoreBuilder<SqldNamespacedBackend<R>, MissingStrategy<P>>
+impl<R> SqliteEventStoreBuilder<SqldNamespacedBackend<R>, MissingStrategy<()>>
 where
-    R: SqliteSqldNamespacedProvisioner<P>,
+    R: SqliteSqldNamespacedProvisioner,
 {
     pub fn strategy<S>(
         self,
         strategy: S,
     ) -> SqliteEventStoreBuilder<SqldNamespacedBackend<R>, WithStrategy<S>>
     where
-        S: SqliteSqldNamespacedPartitionStrategy<Partition = P>,
+        S: SqliteSqldNamespacedPartitionStrategy + SqlitePartitionNamingStrategy,
     {
         SqliteEventStoreBuilder {
             backend: self.backend,
@@ -655,16 +668,16 @@ where
     }
 }
 
-impl<R, P> SqliteEventStoreBuilder<TursoBackend<R>, MissingStrategy<P>>
+impl<R> SqliteEventStoreBuilder<TursoBackend<R>, MissingStrategy<()>>
 where
-    R: SqliteTursoProvisioner<P>,
+    R: SqliteTursoProvisioner,
 {
     pub fn strategy<S>(
         self,
         strategy: S,
     ) -> SqliteEventStoreBuilder<TursoBackend<R>, WithStrategy<S>>
     where
-        S: SqliteSingleRemotePartitionStrategy<Partition = P>,
+        S: SqliteSingleRemotePartitionStrategy,
     {
         SqliteEventStoreBuilder {
             backend: self.backend,
@@ -708,9 +721,9 @@ where
 {
     pub fn sqld_default(
         self,
-        provisioner: impl SqliteSqldDefaultProvisioner<S::Partition>,
+        provisioner: impl SqliteSqldDefaultProvisioner,
     ) -> SqliteEventStoreBuilder<
-        SqldDefaultBackend<impl SqliteSqldDefaultProvisioner<S::Partition>>,
+        SqldDefaultBackend<impl SqliteSqldDefaultProvisioner>,
         WithStrategy<S>,
     > {
         SqliteEventStoreBuilder {
@@ -721,11 +734,8 @@ where
 
     pub fn turso(
         self,
-        provisioner: impl SqliteTursoProvisioner<S::Partition>,
-    ) -> SqliteEventStoreBuilder<
-        TursoBackend<impl SqliteTursoProvisioner<S::Partition>>,
-        WithStrategy<S>,
-    > {
+        provisioner: impl SqliteTursoProvisioner,
+    ) -> SqliteEventStoreBuilder<TursoBackend<impl SqliteTursoProvisioner>, WithStrategy<S>> {
         SqliteEventStoreBuilder {
             backend: TursoBackend { provisioner },
             strategy: self.strategy,
@@ -735,13 +745,13 @@ where
 
 impl<S> SqliteEventStoreBuilder<MissingBackend, WithStrategy<S>>
 where
-    S: SqliteSqldNamespacedPartitionStrategy,
+    S: SqliteSqldNamespacedPartitionStrategy + SqlitePartitionNamingStrategy,
 {
     pub fn sqld_namespaced(
         self,
-        provisioner: impl SqliteSqldNamespacedProvisioner<S::Partition>,
+        provisioner: impl SqliteSqldNamespacedProvisioner,
     ) -> SqliteEventStoreBuilder<
-        SqldNamespacedBackend<impl SqliteSqldNamespacedProvisioner<S::Partition>>,
+        SqldNamespacedBackend<impl SqliteSqldNamespacedProvisioner>,
         WithStrategy<S>,
     > {
         SqliteEventStoreBuilder {
@@ -767,7 +777,7 @@ where
     pub async fn open(self) -> Result<SqliteInMemoryStore<S>, Error> {
         let store = SqliteEventStore::from_catalog(
             self.strategy.0.clone(),
-            ResolverPartitionCatalog::new(InMemoryTargetResolver::<S::Partition>::default()),
+            SingleTargetCatalog::new(InMemoryTargetResolver),
         );
 
         for partition in store.strategy.bootstrap_partitions() {
@@ -781,12 +791,12 @@ where
 impl<S, R> SqliteEventStoreBuilder<SqldDefaultBackend<R>, WithStrategy<S>>
 where
     S: SqliteSingleRemotePartitionStrategy,
-    R: SqliteSqldDefaultProvisioner<S::Partition>,
+    R: SqliteSqldDefaultProvisioner,
 {
-    pub async fn open(self) -> Result<SqliteRemoteStore<S, R>, Error> {
+    pub async fn open(self) -> Result<SqliteSingleRemoteStore<S, R>, Error> {
         let store = SqliteEventStore::from_catalog(
             self.strategy.0.clone(),
-            ResolverPartitionCatalog::new(self.backend.provisioner),
+            SingleTargetCatalog::new(self.backend.provisioner),
         );
 
         for partition in store.strategy.bootstrap_partitions() {
@@ -799,13 +809,13 @@ where
 
 impl<S, R> SqliteEventStoreBuilder<SqldNamespacedBackend<R>, WithStrategy<S>>
 where
-    S: SqliteSqldNamespacedPartitionStrategy,
-    R: SqliteSqldNamespacedProvisioner<S::Partition>,
+    S: SqliteSqldNamespacedPartitionStrategy + SqlitePartitionNamingStrategy,
+    R: SqliteSqldNamespacedProvisioner,
 {
-    pub async fn open(self) -> Result<SqliteRemoteStore<S, R>, Error> {
+    pub async fn open(self) -> Result<SqliteNamedRemoteStore<S, R>, Error> {
         let store = SqliteEventStore::from_catalog(
             self.strategy.0.clone(),
-            ResolverPartitionCatalog::new(self.backend.provisioner),
+            NamedTargetCatalog::new(self.strategy.0.clone(), self.backend.provisioner),
         );
 
         for partition in store.strategy.bootstrap_partitions() {
@@ -819,12 +829,12 @@ where
 impl<S, R> SqliteEventStoreBuilder<TursoBackend<R>, WithStrategy<S>>
 where
     S: SqliteSingleRemotePartitionStrategy,
-    R: SqliteTursoProvisioner<S::Partition>,
+    R: SqliteTursoProvisioner,
 {
-    pub async fn open(self) -> Result<SqliteRemoteStore<S, R>, Error> {
+    pub async fn open(self) -> Result<SqliteSingleRemoteStore<S, R>, Error> {
         let store = SqliteEventStore::from_catalog(
             self.strategy.0.clone(),
-            ResolverPartitionCatalog::new(self.backend.provisioner),
+            SingleTargetCatalog::new(self.backend.provisioner),
         );
 
         for partition in store.strategy.bootstrap_partitions() {

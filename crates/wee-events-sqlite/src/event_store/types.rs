@@ -52,29 +52,50 @@ impl std::fmt::Debug for SqliteDatabaseTarget {
 }
 
 #[async_trait]
-pub trait SqliteTargetProvisioner<P>: Send + Sync {
-    /// Returns a target for a partition, creating or provisioning it if needed.
-    async fn ensure_target_for_partition(
-        &self,
-        partition: &P,
-    ) -> Result<SqliteDatabaseTarget, Error>;
+pub trait SqliteSingleTargetProvisioner: Send + Sync {
+    /// Returns the single concrete target, creating or provisioning it if needed.
+    ///
+    /// Use this for backends where every logical partition is realized by the
+    /// same external target, such as `sqld_default` and `turso`.
+    async fn ensure_target(&self) -> Result<SqliteDatabaseTarget, Error>;
 
-    /// Returns a target for an already-existing partition.
+    /// Returns the single target if it already exists.
     ///
     /// This should avoid creating new storage as a side effect.
-    async fn target_for_existing_partition(
+    async fn existing_target(&self) -> Result<Option<SqliteDatabaseTarget>, Error>;
+}
+
+#[async_trait]
+pub trait SqliteNamedTargetProvisioner: Send + Sync {
+    /// Returns a target for a stable partition name, creating or provisioning it if needed.
+    ///
+    /// The partition name is a logical identifier supplied by
+    /// `SqlitePartitionNamingStrategy`. Backends are free to translate that name
+    /// into whatever concrete addressing scheme they need, such as a namespace.
+    async fn ensure_target_for_name(
         &self,
-        partition: &P,
+        name: Option<&str>,
+    ) -> Result<SqliteDatabaseTarget, Error>;
+
+    /// Returns a target for a stable partition name if it already exists.
+    ///
+    /// This should avoid creating new storage as a side effect.
+    async fn target_for_existing_name(
+        &self,
+        name: Option<&str>,
     ) -> Result<Option<SqliteDatabaseTarget>, Error>;
 
-    /// Enumerates partitions known to this provisioner.
-    async fn partitions(&self) -> Result<Vec<P>, Error> {
+    /// Enumerates partition names known to this provisioner.
+    async fn names(&self) -> Result<Vec<String>, Error> {
         Ok(Vec::new())
     }
 }
 
-pub trait SqliteSqldDefaultProvisioner<P>: SqliteTargetProvisioner<P> {}
+/// Provisioner for a single default sqld database.
+pub trait SqliteSqldDefaultProvisioner: SqliteSingleTargetProvisioner {}
 
-pub trait SqliteSqldNamespacedProvisioner<P>: SqliteTargetProvisioner<P> {}
+/// Provisioner for sqld databases addressed by logical partition name.
+pub trait SqliteSqldNamespacedProvisioner: SqliteNamedTargetProvisioner {}
 
-pub trait SqliteTursoProvisioner<P>: SqliteTargetProvisioner<P> {}
+/// Provisioner for a single Turso database.
+pub trait SqliteTursoProvisioner: SqliteSingleTargetProvisioner {}

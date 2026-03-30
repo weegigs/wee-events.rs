@@ -1,12 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use wee_events::{AggregateId, AggregateType};
 
 use crate::Error;
 
 use super::{
-    decode_path_component, encode_path_component, NamedPartition, SqliteLocalPartitionStrategy,
-    SqlitePartitionRead, SqlitePartitionStrategy, SqliteSqldNamespacedPartitionStrategy,
+    NamedPartition, SqliteLocalPartitionLayout, SqliteLocalPartitionStrategy,
+    SqlitePartitionNamingStrategy, SqlitePartitionRead, SqlitePartitionStrategy,
+    SqliteSqldNamespacedPartitionStrategy,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -45,39 +46,28 @@ impl SqlitePartitionStrategy for TypeStrategy {
     }
 }
 
+impl SqlitePartitionNamingStrategy for TypeStrategy {
+    fn partition_name<'a>(&self, partition: &'a Self::Partition) -> Option<&'a str> {
+        Some(partition.name())
+    }
+
+    fn partition_from_name(&self, name: &str) -> Result<Self::Partition, Error> {
+        let aggregate_type = AggregateType::new(name);
+        Ok(TypePartition::new(
+            aggregate_type.as_str().to_string(),
+            aggregate_type,
+        ))
+    }
+}
+
 impl SqliteLocalPartitionStrategy for TypeStrategy {
     fn initialize_root(&self, root: &Path) -> Result<(), Error> {
         std::fs::create_dir_all(root)?;
         Ok(())
     }
 
-    fn path_for_partition(
-        &self,
-        root: &Path,
-        partition: &Self::Partition,
-    ) -> Result<PathBuf, Error> {
-        Ok(root.join(format!("{}.db", encode_path_component(partition.name()))))
-    }
-
-    fn discover_partitions(&self, root: &Path) -> Result<Vec<Self::Partition>, Error> {
-        let mut partitions = Vec::new();
-        for entry in std::fs::read_dir(root)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().is_none_or(|extension| extension != "db") {
-                continue;
-            }
-            let Some(stem) = path.file_stem() else {
-                continue;
-            };
-            let aggregate_type = decode_path_component(&stem.to_string_lossy())?;
-            let aggregate_type = AggregateType::new(aggregate_type);
-            partitions.push(TypePartition::new(
-                aggregate_type.as_str().to_string(),
-                aggregate_type,
-            ));
-        }
-        Ok(partitions)
+    fn local_partition_layout(&self) -> SqliteLocalPartitionLayout {
+        SqliteLocalPartitionLayout::NamedDatabases
     }
 }
 
@@ -88,37 +78,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn path_for_partition_encodes_type_names() {
-        let path = TypeStrategy
-            .path_for_partition(
-                Path::new("/tmp/root"),
-                &TypePartition::new("a/b:c", AggregateType::new("a/b:c")),
-            )
-            .expect("path generation should succeed");
+    fn partition_name_matches_aggregate_type() {
+        let partition = TypeStrategy
+            .partition_for_aggregate(&AggregateId::new("a/b:c", "123"))
+            .expect("routing should succeed");
 
-        let file_name = path
-            .file_name()
-            .expect("file name should be present")
-            .to_string_lossy();
-        assert!(file_name.starts_with("b32-"));
-        assert!(!file_name.contains('/'));
-        assert!(!file_name.contains('\\'));
-        assert!(!file_name.contains(':'));
+        assert_eq!(partition.name(), "a/b:c");
+        assert_eq!(partition.key(), &AggregateType::new("a/b:c"));
     }
 
     #[test]
-    fn discover_partitions_decodes_encoded_names() {
-        let temp_dir = tempfile::tempdir().expect("tempdir should succeed");
-        let partition = TypePartition::new("a/b:c", AggregateType::new("a/b:c"));
-        let path = TypeStrategy
-            .path_for_partition(temp_dir.path(), &partition)
-            .expect("path generation should succeed");
-        std::fs::write(path, b"").expect("write should succeed");
+    fn partition_from_name_restores_type_partition() {
+        let partition = TypeStrategy
+            .partition_from_name("a/b:c")
+            .expect("partition restore should succeed");
 
-        let partitions = TypeStrategy
-            .discover_partitions(temp_dir.path())
-            .expect("discovery should succeed");
-
-        assert_eq!(partitions, vec![partition]);
+        assert_eq!(
+            partition,
+            TypePartition::new("a/b:c", AggregateType::new("a/b:c"))
+        );
     }
 }

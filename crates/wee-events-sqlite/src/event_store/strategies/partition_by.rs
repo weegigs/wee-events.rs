@@ -1,12 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use wee_events::{AggregateId, AggregateType};
 
 use crate::Error;
 
 use super::{
-    decode_path_component, encode_path_component, NamedPartition, SqliteLocalPartitionStrategy,
-    SqlitePartitionRead, SqlitePartitionStrategy, SqliteSqldNamespacedPartitionStrategy,
+    NamedPartition, SqliteLocalPartitionLayout, SqliteLocalPartitionStrategy,
+    SqlitePartitionNamingStrategy, SqlitePartitionRead, SqlitePartitionStrategy,
+    SqliteSqldNamespacedPartitionStrategy,
 };
 
 #[derive(Clone)]
@@ -53,6 +54,19 @@ where
     }
 }
 
+impl<F> SqlitePartitionNamingStrategy for PartitionByStrategy<F>
+where
+    F: Fn(&AggregateId) -> String + Clone + Send + Sync + 'static,
+{
+    fn partition_name<'a>(&self, partition: &'a Self::Partition) -> Option<&'a str> {
+        Some(partition.name())
+    }
+
+    fn partition_from_name(&self, name: &str) -> Result<Self::Partition, Error> {
+        Ok(NamedPartition::new(name.to_string(), name.to_string()))
+    }
+}
+
 impl<F> SqliteLocalPartitionStrategy for PartitionByStrategy<F>
 where
     F: Fn(&AggregateId) -> String + Clone + Send + Sync + 'static,
@@ -62,29 +76,8 @@ where
         Ok(())
     }
 
-    fn path_for_partition(
-        &self,
-        root: &Path,
-        partition: &Self::Partition,
-    ) -> Result<PathBuf, Error> {
-        Ok(root.join(format!("{}.db", encode_path_component(partition.name()))))
-    }
-
-    fn discover_partitions(&self, root: &Path) -> Result<Vec<Self::Partition>, Error> {
-        let mut partitions = Vec::new();
-        for entry in std::fs::read_dir(root)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().is_none_or(|extension| extension != "db") {
-                continue;
-            }
-            let Some(stem) = path.file_stem() else {
-                continue;
-            };
-            let partition_name = decode_path_component(&stem.to_string_lossy())?;
-            partitions.push(NamedPartition::new(partition_name.clone(), partition_name));
-        }
-        Ok(partitions)
+    fn local_partition_layout(&self) -> SqliteLocalPartitionLayout {
+        SqliteLocalPartitionLayout::NamedDatabases
     }
 }
 
@@ -127,39 +120,15 @@ mod tests {
     }
 
     #[test]
-    fn path_for_partition_encodes_partition_names() {
+    fn partition_from_name_restores_named_partition() {
         let strategy = PartitionByStrategy::new(partition_by_user);
-        let path = strategy
-            .path_for_partition(
-                Path::new("/tmp/root"),
-                &NamedPartition::new("kevin/team:1", "kevin/team:1".to_string()),
-            )
-            .expect("path generation should succeed");
+        let partition = strategy
+            .partition_from_name("kevin/team:1")
+            .expect("partition restore should succeed");
 
-        let file_name = path
-            .file_name()
-            .expect("file name should be present")
-            .to_string_lossy();
-        assert!(file_name.starts_with("b32-"));
-        assert!(!file_name.contains('/'));
-        assert!(!file_name.contains('\\'));
-        assert!(!file_name.contains(':'));
-    }
-
-    #[test]
-    fn discover_partitions_decodes_encoded_names() {
-        let strategy = PartitionByStrategy::new(partition_by_user);
-        let temp_dir = tempfile::tempdir().expect("tempdir should succeed");
-        let partition = NamedPartition::new("kevin/team:1", "kevin/team:1".to_string());
-        let path = strategy
-            .path_for_partition(temp_dir.path(), &partition)
-            .expect("path generation should succeed");
-        std::fs::write(path, b"").expect("write should succeed");
-
-        let partitions = strategy
-            .discover_partitions(temp_dir.path())
-            .expect("discovery should succeed");
-
-        assert_eq!(partitions, vec![partition]);
+        assert_eq!(
+            partition,
+            NamedPartition::new("kevin/team:1", "kevin/team:1".to_string())
+        );
     }
 }

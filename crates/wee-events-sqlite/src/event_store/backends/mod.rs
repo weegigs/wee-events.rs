@@ -4,4 +4,4 @@ mod remote;
 
 pub(super) use local::LocalPartitionCatalog;
 pub(super) use memory::InMemoryTargetResolver;
-pub(super) use remote::ResolverPartitionCatalog;
+pub(super) use remote::{NamedTargetCatalog, SingleTargetCatalog};

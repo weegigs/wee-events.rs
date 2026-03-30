@@ -9,10 +9,11 @@ pub use error::Error;
 pub use event_store::{
     AggregatePartition, AggregateStrategy, BucketPartition, GlobalPartition, GlobalStrategy,
     HashedStrategy, NamedPartition, PartitionByStrategy, SqliteDatabaseTarget, SqliteEventStore,
-    SqliteInMemoryStore, SqliteLocalPartitionStrategy, SqliteLocalStore, SqlitePartitionCatalog,
-    SqlitePartitionKey, SqlitePartitionRead, SqlitePartitionStrategy, SqliteRemoteStore,
-    SqliteSingleRemotePartitionStrategy, SqliteSqldDefaultProvisioner,
-    SqliteSqldNamespacedPartitionStrategy, SqliteSqldNamespacedProvisioner,
-    SqliteTargetProvisioner, SqliteTursoProvisioner, TypePartition, TypeStrategy,
+    SqliteInMemoryStore, SqliteLocalPartitionStrategy, SqliteLocalStore, SqliteNamedRemoteStore,
+    SqliteNamedTargetProvisioner, SqlitePartitionCatalog, SqlitePartitionKey,
+    SqlitePartitionNamingStrategy, SqlitePartitionRead, SqlitePartitionStrategy, SqliteRemoteStore,
+    SqliteSingleRemotePartitionStrategy, SqliteSingleRemoteStore, SqliteSingleTargetProvisioner,
+    SqliteSqldDefaultProvisioner, SqliteSqldNamespacedPartitionStrategy,
+    SqliteSqldNamespacedProvisioner, SqliteTursoProvisioner, TypePartition, TypeStrategy,
 };
 pub use projections::{apply_projection, rebuild_projection};

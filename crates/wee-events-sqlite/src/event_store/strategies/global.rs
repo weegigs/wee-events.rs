@@ -1,12 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use wee_events::{AggregateId, AggregateType};
 
 use crate::Error;
 
 use super::{
-    SqliteLocalPartitionStrategy, SqlitePartitionRead, SqlitePartitionStrategy,
-    SqliteSingleRemotePartitionStrategy, SqliteSqldNamespacedPartitionStrategy,
+    SqliteLocalPartitionLayout, SqliteLocalPartitionStrategy, SqlitePartitionNamingStrategy,
+    SqlitePartitionRead, SqlitePartitionStrategy, SqliteSingleRemotePartitionStrategy,
+    SqliteSqldNamespacedPartitionStrategy,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -42,21 +43,25 @@ impl SqlitePartitionStrategy for GlobalStrategy {
     }
 }
 
+impl SqlitePartitionNamingStrategy for GlobalStrategy {
+    fn partition_name<'a>(&self, _partition: &'a Self::Partition) -> Option<&'a str> {
+        None
+    }
+
+    fn partition_from_name(&self, name: &str) -> Result<Self::Partition, Error> {
+        Err(Error::Configuration(format!(
+            "global strategy does not support named local partitions: {name}"
+        )))
+    }
+}
+
 impl SqliteLocalPartitionStrategy for GlobalStrategy {
     fn initialize_root(&self, _root: &Path) -> Result<(), Error> {
         Ok(())
     }
 
-    fn path_for_partition(
-        &self,
-        root: &Path,
-        _partition: &Self::Partition,
-    ) -> Result<PathBuf, Error> {
-        Ok(root.to_path_buf())
-    }
-
-    fn discover_partitions(&self, _root: &Path) -> Result<Vec<Self::Partition>, Error> {
-        Ok(vec![GlobalPartition])
+    fn local_partition_layout(&self) -> SqliteLocalPartitionLayout {
+        SqliteLocalPartitionLayout::SingleDatabase
     }
 }
 
