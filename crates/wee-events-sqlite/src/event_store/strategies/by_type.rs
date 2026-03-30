@@ -5,8 +5,8 @@ use wee_events::{AggregateId, AggregateType};
 use crate::Error;
 
 use super::{
-    SqliteLocalPartitionStrategy, SqlitePartitionRead, SqlitePartitionStrategy,
-    SqliteSqldNamespacedPartitionStrategy,
+    decode_path_component, encode_path_component, SqliteLocalPartitionStrategy,
+    SqlitePartitionRead, SqlitePartitionStrategy, SqliteSqldNamespacedPartitionStrategy,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -53,7 +53,10 @@ impl SqliteLocalPartitionStrategy for TypeStrategy {
         root: &Path,
         partition: &Self::Partition,
     ) -> Result<PathBuf, Error> {
-        Ok(root.join(format!("{}.db", partition.0.as_str())))
+        Ok(root.join(format!(
+            "{}.db",
+            encode_path_component(partition.0.as_str())
+        )))
     }
 
     fn discover_partitions(&self, root: &Path) -> Result<Vec<Self::Partition>, Error> {
@@ -67,12 +70,51 @@ impl SqliteLocalPartitionStrategy for TypeStrategy {
             let Some(stem) = path.file_stem() else {
                 continue;
             };
-            partitions.push(TypePartition(AggregateType::new(
-                stem.to_string_lossy().into_owned(),
-            )));
+            let aggregate_type = decode_path_component(&stem.to_string_lossy())?;
+            partitions.push(TypePartition(AggregateType::new(aggregate_type)));
         }
         Ok(partitions)
     }
 }
 
 impl SqliteSqldNamespacedPartitionStrategy for TypeStrategy {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_for_partition_encodes_type_names() {
+        let path = TypeStrategy
+            .path_for_partition(
+                Path::new("/tmp/root"),
+                &TypePartition(AggregateType::new("a/b:c")),
+            )
+            .expect("path generation should succeed");
+
+        let file_name = path
+            .file_name()
+            .expect("file name should be present")
+            .to_string_lossy();
+        assert!(file_name.starts_with("b32-"));
+        assert!(!file_name.contains('/'));
+        assert!(!file_name.contains('\\'));
+        assert!(!file_name.contains(':'));
+    }
+
+    #[test]
+    fn discover_partitions_decodes_encoded_names() {
+        let temp_dir = tempfile::tempdir().expect("tempdir should succeed");
+        let partition = TypePartition(AggregateType::new("a/b:c"));
+        let path = TypeStrategy
+            .path_for_partition(temp_dir.path(), &partition)
+            .expect("path generation should succeed");
+        std::fs::write(path, b"").expect("write should succeed");
+
+        let partitions = TypeStrategy
+            .discover_partitions(temp_dir.path())
+            .expect("discovery should succeed");
+
+        assert_eq!(partitions, vec![partition]);
+    }
+}

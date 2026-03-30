@@ -2,6 +2,7 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
 
+use data_encoding::BASE32_NOPAD;
 use wee_events::{AggregateId, AggregateType};
 
 use crate::Error;
@@ -62,3 +63,31 @@ pub trait SqliteLocalPartitionStrategy: SqlitePartitionStrategy {
 pub trait SqliteSingleRemotePartitionStrategy: SqlitePartitionStrategy {}
 
 pub trait SqliteSqldNamespacedPartitionStrategy: SqlitePartitionStrategy {}
+
+const ENCODED_PATH_PREFIX: &str = "b32-";
+
+pub(super) fn encode_path_component(value: &str) -> String {
+    let encoded_value = BASE32_NOPAD.encode(value.as_bytes());
+    let mut encoded = String::with_capacity(ENCODED_PATH_PREFIX.len() + encoded_value.len());
+    encoded.push_str(ENCODED_PATH_PREFIX);
+    encoded.push_str(&encoded_value);
+    encoded
+}
+
+pub(super) fn decode_path_component(value: &str) -> Result<String, Error> {
+    let encoded = value.strip_prefix(ENCODED_PATH_PREFIX).ok_or_else(|| {
+        Error::Configuration(format!("invalid encoded partition path component: {value}"))
+    })?;
+
+    let bytes = BASE32_NOPAD.decode(encoded.as_bytes()).map_err(|error| {
+        Error::Configuration(format!(
+            "invalid encoded partition path component '{value}': {error}"
+        ))
+    })?;
+
+    String::from_utf8(bytes).map_err(|error| {
+        Error::Configuration(format!(
+            "invalid utf-8 in encoded partition path component '{value}': {error}"
+        ))
+    })
+}
