@@ -4,20 +4,15 @@ mod store;
 mod strategies;
 mod types;
 
-pub use store::SqliteEventStore;
-pub use store::{
-    SqliteInMemoryStore, SqliteLocalStore, SqliteNamedRemoteStore, SqliteRemoteStore,
-    SqliteSingleRemoteStore,
-};
+pub use store::EventStore;
+pub use store::{InMemoryStore, LocalStore, NamedRemoteStore, RemoteStore, SingleRemoteStore};
 pub use strategies::{
     AggregatePartition, AggregateStrategy, BucketPartition, GlobalPartition, GlobalStrategy,
-    HashedStrategy, NamedPartition, PartitionByStrategy, SqliteLocalPartitionStrategy,
-    SqlitePartitionKey, SqlitePartitionNamingStrategy, SqlitePartitionRead,
-    SqlitePartitionStrategy, SqliteSingleRemotePartitionStrategy,
-    SqliteSqldNamespacedPartitionStrategy, TypePartition, TypeStrategy,
+    HashedStrategy, LocalPartitionLayout, LocalPartitionStrategy, NamedPartition,
+    PartitionByStrategy, PartitionKey, PartitionNamingStrategy, PartitionRead, PartitionStrategy,
+    SingleRemotePartitionStrategy, SqldNamespacedPartitionStrategy, TypePartition, TypeStrategy,
 };
 pub use types::{
-    SqliteDatabaseTarget, SqliteNamedTargetProvisioner, SqlitePartitionCatalog,
-    SqliteSingleTargetProvisioner, SqliteSqldDefaultProvisioner, SqliteSqldNamespacedProvisioner,
-    SqliteTursoProvisioner,
+    DatabaseTarget, NamedTargetProvisioner, PartitionCatalog, SingleTargetProvisioner,
+    SqldDefaultProvisioner, SqldNamespacedProvisioner, TursoProvisioner,
 };

@@ -1,13 +1,12 @@
 use std::path::PathBuf;
 
-use async_trait::async_trait;
 use data_encoding::BASE32_NOPAD;
 
 use crate::Error;
 
-use super::super::partitioning::SqlitePartitionCatalog;
-use super::super::strategies::{SqliteLocalPartitionLayout, SqliteLocalPartitionStrategy};
-use super::super::types::SqliteDatabaseTarget;
+use super::super::partitioning::PartitionCatalog;
+use super::super::strategies::{LocalPartitionLayout, LocalPartitionStrategy};
+use super::super::types::DatabaseTarget;
 
 #[derive(Debug)]
 pub struct LocalPartitionCatalog<S> {
@@ -17,7 +16,7 @@ pub struct LocalPartitionCatalog<S> {
 
 impl<S> LocalPartitionCatalog<S>
 where
-    S: SqliteLocalPartitionStrategy,
+    S: LocalPartitionStrategy,
 {
     pub(crate) fn new(root: PathBuf, strategy: S) -> Result<Self, Error> {
         strategy.initialize_root(&root)?;
@@ -26,8 +25,8 @@ where
 
     fn path_for_partition(&self, partition: &S::Partition) -> Result<PathBuf, Error> {
         match self.strategy.local_partition_layout() {
-            SqliteLocalPartitionLayout::SingleDatabase => Ok(self.root.clone()),
-            SqliteLocalPartitionLayout::NamedDatabases => {
+            LocalPartitionLayout::SingleDatabase => Ok(self.root.clone()),
+            LocalPartitionLayout::NamedDatabases => {
                 let name = self.strategy.partition_name(partition).ok_or_else(|| {
                     Error::Configuration(
                         "named local partition strategy returned no partition name".to_string(),
@@ -42,8 +41,8 @@ where
 
     fn discover_partitions(&self) -> Result<Vec<S::Partition>, Error> {
         match self.strategy.local_partition_layout() {
-            SqliteLocalPartitionLayout::SingleDatabase => Ok(self.strategy.bootstrap_partitions()),
-            SqliteLocalPartitionLayout::NamedDatabases => {
+            LocalPartitionLayout::SingleDatabase => Ok(self.strategy.bootstrap_partitions()),
+            LocalPartitionLayout::NamedDatabases => {
                 let mut partitions = Vec::new();
                 for entry in std::fs::read_dir(&self.root)? {
                     let entry = entry?;
@@ -63,29 +62,28 @@ where
     }
 }
 
-#[async_trait]
-impl<S> SqlitePartitionCatalog<S::Partition> for LocalPartitionCatalog<S>
+impl<S> PartitionCatalog<S::Partition> for LocalPartitionCatalog<S>
 where
-    S: SqliteLocalPartitionStrategy,
+    S: LocalPartitionStrategy,
 {
     async fn ensure_target_for_partition(
         &self,
         partition: &S::Partition,
-    ) -> Result<SqliteDatabaseTarget, Error> {
+    ) -> Result<DatabaseTarget, Error> {
         let path = self.path_for_partition(partition)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        Ok(SqliteDatabaseTarget::Local(path))
+        Ok(DatabaseTarget::Local(path))
     }
 
     async fn target_for_existing_partition(
         &self,
         partition: &S::Partition,
-    ) -> Result<Option<SqliteDatabaseTarget>, Error> {
+    ) -> Result<Option<DatabaseTarget>, Error> {
         let path = self.path_for_partition(partition)?;
-        Ok(path.exists().then_some(SqliteDatabaseTarget::Local(path)))
+        Ok(path.exists().then_some(DatabaseTarget::Local(path)))
     }
 
     async fn partitions(&self) -> Result<Vec<S::Partition>, Error> {
@@ -143,7 +141,7 @@ mod tests {
             .await
             .expect("path generation should succeed");
 
-        let SqliteDatabaseTarget::Local(path) = target else {
+        let DatabaseTarget::Local(path) = target else {
             panic!("expected local target");
         };
         let file_name = path
@@ -168,7 +166,7 @@ mod tests {
             .ensure_target_for_partition(&partition)
             .await
             .expect("path generation should succeed");
-        let SqliteDatabaseTarget::Local(path) = target else {
+        let DatabaseTarget::Local(path) = target else {
             panic!("expected local target");
         };
         std::fs::write(path, b"").expect("write should succeed");
@@ -193,6 +191,6 @@ mod tests {
             .await
             .expect("path generation should succeed");
 
-        assert_eq!(target, SqliteDatabaseTarget::Local(database_path));
+        assert_eq!(target, DatabaseTarget::Local(database_path));
     }
 }

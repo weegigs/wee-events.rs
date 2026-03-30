@@ -1,14 +1,12 @@
 use std::path::PathBuf;
 
-use async_trait::async_trait;
-
 use crate::Error;
 
-pub use super::partitioning::SqlitePartitionCatalog;
+pub use super::partitioning::PartitionCatalog;
 
 /// A concrete database target for a partition.
 #[derive(Clone, PartialEq, Eq)]
-pub enum SqliteDatabaseTarget {
+pub enum DatabaseTarget {
     InMemory,
     Local(PathBuf),
     SqldDefault {
@@ -26,7 +24,7 @@ pub enum SqliteDatabaseTarget {
     },
 }
 
-impl std::fmt::Debug for SqliteDatabaseTarget {
+impl std::fmt::Debug for DatabaseTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InMemory => f.write_str("InMemory"),
@@ -51,31 +49,28 @@ impl std::fmt::Debug for SqliteDatabaseTarget {
     }
 }
 
-#[async_trait]
-pub trait SqliteSingleTargetProvisioner: Send + Sync {
+#[allow(async_fn_in_trait)]
+pub trait SingleTargetProvisioner: Send + Sync {
     /// Returns the single concrete target, creating or provisioning it if needed.
     ///
     /// Use this for backends where every logical partition is realized by the
     /// same external target, such as `sqld_default` and `turso`.
-    async fn ensure_target(&self) -> Result<SqliteDatabaseTarget, Error>;
+    async fn ensure_target(&self) -> Result<DatabaseTarget, Error>;
 
     /// Returns the single target if it already exists.
     ///
     /// This should avoid creating new storage as a side effect.
-    async fn existing_target(&self) -> Result<Option<SqliteDatabaseTarget>, Error>;
+    async fn existing_target(&self) -> Result<Option<DatabaseTarget>, Error>;
 }
 
-#[async_trait]
-pub trait SqliteNamedTargetProvisioner: Send + Sync {
+#[allow(async_fn_in_trait)]
+pub trait NamedTargetProvisioner: Send + Sync {
     /// Returns a target for a stable partition name, creating or provisioning it if needed.
     ///
     /// The partition name is a logical identifier supplied by
-    /// `SqlitePartitionNamingStrategy`. Backends are free to translate that name
+    /// `PartitionNamingStrategy`. Backends are free to translate that name
     /// into whatever concrete addressing scheme they need, such as a namespace.
-    async fn ensure_target_for_name(
-        &self,
-        name: Option<&str>,
-    ) -> Result<SqliteDatabaseTarget, Error>;
+    async fn ensure_target_for_name(&self, name: Option<&str>) -> Result<DatabaseTarget, Error>;
 
     /// Returns a target for a stable partition name if it already exists.
     ///
@@ -83,7 +78,7 @@ pub trait SqliteNamedTargetProvisioner: Send + Sync {
     async fn target_for_existing_name(
         &self,
         name: Option<&str>,
-    ) -> Result<Option<SqliteDatabaseTarget>, Error>;
+    ) -> Result<Option<DatabaseTarget>, Error>;
 
     /// Enumerates partition names known to this provisioner.
     async fn names(&self) -> Result<Vec<String>, Error> {
@@ -92,10 +87,10 @@ pub trait SqliteNamedTargetProvisioner: Send + Sync {
 }
 
 /// Provisioner for a single default sqld database.
-pub trait SqliteSqldDefaultProvisioner: SqliteSingleTargetProvisioner {}
+pub trait SqldDefaultProvisioner: SingleTargetProvisioner {}
 
 /// Provisioner for sqld databases addressed by logical partition name.
-pub trait SqliteSqldNamespacedProvisioner: SqliteNamedTargetProvisioner {}
+pub trait SqldNamespacedProvisioner: NamedTargetProvisioner {}
 
 /// Provisioner for a single Turso database.
-pub trait SqliteTursoProvisioner: SqliteSingleTargetProvisioner {}
+pub trait TursoProvisioner: SingleTargetProvisioner {}

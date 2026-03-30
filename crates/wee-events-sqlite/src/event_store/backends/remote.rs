@@ -1,12 +1,8 @@
-use async_trait::async_trait;
-
 use crate::Error;
 
-use super::super::partitioning::SqlitePartitionCatalog;
-use super::super::strategies::SqlitePartitionNamingStrategy;
-use super::super::types::{
-    SqliteDatabaseTarget, SqliteNamedTargetProvisioner, SqliteSingleTargetProvisioner,
-};
+use super::super::partitioning::PartitionCatalog;
+use super::super::strategies::PartitionNamingStrategy;
+use super::super::types::{DatabaseTarget, NamedTargetProvisioner, SingleTargetProvisioner};
 
 pub struct SingleTargetCatalog<P, R> {
     provisioner: R,
@@ -22,23 +18,19 @@ impl<P, R> SingleTargetCatalog<P, R> {
     }
 }
 
-#[async_trait]
-impl<P, R> SqlitePartitionCatalog<P> for SingleTargetCatalog<P, R>
+impl<P, R> PartitionCatalog<P> for SingleTargetCatalog<P, R>
 where
     P: Clone + Send + Sync + 'static,
-    R: SqliteSingleTargetProvisioner,
+    R: SingleTargetProvisioner,
 {
-    async fn ensure_target_for_partition(
-        &self,
-        _partition: &P,
-    ) -> Result<SqliteDatabaseTarget, Error> {
+    async fn ensure_target_for_partition(&self, _partition: &P) -> Result<DatabaseTarget, Error> {
         self.provisioner.ensure_target().await
     }
 
     async fn target_for_existing_partition(
         &self,
         _partition: &P,
-    ) -> Result<Option<SqliteDatabaseTarget>, Error> {
+    ) -> Result<Option<DatabaseTarget>, Error> {
         self.provisioner.existing_target().await
     }
 
@@ -61,16 +53,15 @@ impl<S, R> NamedTargetCatalog<S, R> {
     }
 }
 
-#[async_trait]
-impl<S, R> SqlitePartitionCatalog<S::Partition> for NamedTargetCatalog<S, R>
+impl<S, R> PartitionCatalog<S::Partition> for NamedTargetCatalog<S, R>
 where
-    S: SqlitePartitionNamingStrategy,
-    R: SqliteNamedTargetProvisioner,
+    S: PartitionNamingStrategy,
+    R: NamedTargetProvisioner,
 {
     async fn ensure_target_for_partition(
         &self,
         partition: &S::Partition,
-    ) -> Result<SqliteDatabaseTarget, Error> {
+    ) -> Result<DatabaseTarget, Error> {
         self.provisioner
             .ensure_target_for_name(self.strategy.partition_name(partition))
             .await
@@ -79,7 +70,7 @@ where
     async fn target_for_existing_partition(
         &self,
         partition: &S::Partition,
-    ) -> Result<Option<SqliteDatabaseTarget>, Error> {
+    ) -> Result<Option<DatabaseTarget>, Error> {
         self.provisioner
             .target_for_existing_name(self.strategy.partition_name(partition))
             .await

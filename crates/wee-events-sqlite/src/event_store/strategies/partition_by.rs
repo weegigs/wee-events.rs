@@ -5,9 +5,8 @@ use wee_events::{AggregateId, AggregateType};
 use crate::Error;
 
 use super::{
-    NamedPartition, SqliteLocalPartitionLayout, SqliteLocalPartitionStrategy,
-    SqlitePartitionNamingStrategy, SqlitePartitionRead, SqlitePartitionStrategy,
-    SqliteSqldNamespacedPartitionStrategy,
+    LocalPartitionLayout, LocalPartitionStrategy, NamedPartition, PartitionNamingStrategy,
+    PartitionRead, PartitionStrategy, SqldNamespacedPartitionStrategy,
 };
 
 #[derive(Clone)]
@@ -27,7 +26,7 @@ impl<F> std::fmt::Debug for PartitionByStrategy<F> {
     }
 }
 
-impl<F> SqlitePartitionStrategy for PartitionByStrategy<F>
+impl<F> PartitionStrategy for PartitionByStrategy<F>
 where
     F: Fn(&AggregateId) -> String + Clone + Send + Sync + 'static,
 {
@@ -41,20 +40,20 @@ where
         Ok(NamedPartition::new(name.clone(), name))
     }
 
-    fn read_plan(&self, _partition: &Self::Partition) -> SqlitePartitionRead {
-        SqlitePartitionRead::ScanAll
+    fn read_plan(&self, _partition: &Self::Partition) -> PartitionRead {
+        PartitionRead::ScanAll
     }
 
     fn read_plan_by_type(
         &self,
         _partition: &Self::Partition,
         aggregate_type: &AggregateType,
-    ) -> SqlitePartitionRead {
-        SqlitePartitionRead::ScanType(aggregate_type.clone())
+    ) -> PartitionRead {
+        PartitionRead::ScanType(aggregate_type.clone())
     }
 }
 
-impl<F> SqlitePartitionNamingStrategy for PartitionByStrategy<F>
+impl<F> PartitionNamingStrategy for PartitionByStrategy<F>
 where
     F: Fn(&AggregateId) -> String + Clone + Send + Sync + 'static,
 {
@@ -67,7 +66,7 @@ where
     }
 }
 
-impl<F> SqliteLocalPartitionStrategy for PartitionByStrategy<F>
+impl<F> LocalPartitionStrategy for PartitionByStrategy<F>
 where
     F: Fn(&AggregateId) -> String + Clone + Send + Sync + 'static,
 {
@@ -76,12 +75,12 @@ where
         Ok(())
     }
 
-    fn local_partition_layout(&self) -> SqliteLocalPartitionLayout {
-        SqliteLocalPartitionLayout::NamedDatabases
+    fn local_partition_layout(&self) -> LocalPartitionLayout {
+        LocalPartitionLayout::NamedDatabases
     }
 }
 
-impl<F> SqliteSqldNamespacedPartitionStrategy for PartitionByStrategy<F> where
+impl<F> SqldNamespacedPartitionStrategy for PartitionByStrategy<F> where
     F: Fn(&AggregateId) -> String + Clone + Send + Sync + 'static
 {
 }

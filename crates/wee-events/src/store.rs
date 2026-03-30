@@ -1,5 +1,3 @@
-use std::future::Future;
-
 use crate::aggregate::Aggregate;
 use crate::event::{ChangeSet, EventData};
 use crate::id::{AggregateId, CorrelationId, EventId, EventType, Revision};
@@ -24,16 +22,18 @@ pub struct RawEvent {
 /// load and publish take `AggregateId` as a parameter.
 ///
 /// Implementors provide the persistence mechanism (in-memory, SQLite, etc.).
+///
+/// This trait is intended for static dispatch. Implementations and callers in
+/// this workspace use concrete store types, so native `async fn` keeps the API
+/// clear without reintroducing erased futures.
+#[allow(async_fn_in_trait)]
 pub trait EventStore: Send + Sync {
-    fn load(
-        &self,
-        id: &AggregateId,
-    ) -> impl Future<Output = Result<Aggregate, crate::Error>> + Send;
+    async fn load(&self, id: &AggregateId) -> Result<Aggregate, crate::Error>;
 
-    fn publish(
+    async fn publish(
         &self,
         aggregate_id: &AggregateId,
         options: PublishOptions,
         events: Vec<RawEvent>,
-    ) -> impl Future<Output = Result<ChangeSet, crate::Error>> + Send;
+    ) -> Result<ChangeSet, crate::Error>;
 }

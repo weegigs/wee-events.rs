@@ -1,4 +1,4 @@
-//! Runs the conformance test suite against `SqliteEventStore`.
+//! Runs the conformance test suite against `EventStore`.
 
 use std::collections::HashSet;
 use std::num::NonZeroU32;
@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use reqwest::StatusCode;
 use testcontainers::{
     core::{IntoContainerPort, WaitFor},
@@ -15,15 +14,16 @@ use testcontainers::{
 };
 use tokio::sync::OnceCell;
 use tokio::time::sleep;
-use wee_events::{Aggregate, AggregateId, ChangeSet, EventStore, PublishOptions, RawEvent};
+use wee_events::{
+    Aggregate, AggregateId, ChangeSet, EventStore as EventStoreTrait, PublishOptions, RawEvent,
+};
 use wee_events_sqlite::{
-    AggregateStrategy, Error, GlobalStrategy, HashedStrategy, PartitionByStrategy,
-    SqliteDatabaseTarget, SqliteEventStore, SqliteInMemoryStore, SqliteLocalPartitionStrategy,
-    SqliteLocalStore, SqliteNamedRemoteStore, SqliteNamedTargetProvisioner, SqlitePartitionCatalog,
-    SqlitePartitionNamingStrategy, SqlitePartitionStrategy, SqliteSingleRemotePartitionStrategy,
-    SqliteSingleRemoteStore, SqliteSingleTargetProvisioner, SqliteSqldDefaultProvisioner,
-    SqliteSqldNamespacedPartitionStrategy, SqliteSqldNamespacedProvisioner, SqliteTursoProvisioner,
-    TypeStrategy,
+    AggregateStrategy, DatabaseTarget, Error, EventStore, GlobalStrategy, HashedStrategy,
+    InMemoryStore, LocalPartitionStrategy, LocalStore, NamedRemoteStore, NamedTargetProvisioner,
+    PartitionByStrategy, PartitionCatalog, PartitionNamingStrategy, PartitionStrategy,
+    SingleRemotePartitionStrategy, SingleRemoteStore, SingleTargetProvisioner,
+    SqldDefaultProvisioner as SqldDefaultProvisionerTrait, SqldNamespacedPartitionStrategy,
+    SqldNamespacedProvisioner, TursoProvisioner, TypeStrategy,
 };
 
 macro_rules! optional_store_test_suite {
@@ -234,13 +234,13 @@ wee_events::testing::store_test_suite!(
 
 optional_store_test_suite!(sqlite_store_turso_single, make_turso_store(GlobalStrategy));
 
-async fn make_in_memory_store<S>(strategy: S) -> TempStore<SqliteInMemoryStore<S>>
+async fn make_in_memory_store<S>(strategy: S) -> TempStore<InMemoryStore<S>>
 where
-    S: SqlitePartitionStrategy,
+    S: PartitionStrategy,
 {
     TempStore {
         _guard: TestStoreGuard::None,
-        store: SqliteEventStore::builder()
+        store: EventStore::builder()
             .in_memory()
             .strategy(strategy)
             .open()
@@ -249,12 +249,12 @@ where
     }
 }
 
-async fn make_local_store<S>(strategy: S) -> TempStore<SqliteLocalStore<S>>
+async fn make_local_store<S>(strategy: S) -> TempStore<LocalStore<S>>
 where
-    S: SqliteLocalPartitionStrategy + LocalStorePath,
+    S: LocalPartitionStrategy + LocalStorePath,
 {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = SqliteEventStore::builder()
+    let store = EventStore::builder()
         .local(S::local_store_path(&temp_dir))
         .strategy(strategy)
         .open()
@@ -271,13 +271,13 @@ where
 
 async fn make_remote_sqld_store<S>(
     strategy: S,
-) -> TempStore<SqliteNamedRemoteStore<S, SqldNamespaceProvisioner>>
+) -> TempStore<NamedRemoteStore<S, TestSqldNamespaceProvisioner>>
 where
-    S: SqliteSqldNamespacedPartitionStrategy + SqlitePartitionNamingStrategy,
+    S: SqldNamespacedPartitionStrategy + PartitionNamingStrategy,
 {
     let instance = shared_sqld_instance().await;
     let provisioner =
-        SqldNamespaceProvisioner::new(instance.url.clone(), instance.admin_url.clone());
+        TestSqldNamespaceProvisioner::new(instance.url.clone(), instance.admin_url.clone());
 
     let store = open_sqld_store_with_retry(strategy, provisioner).await;
     wait_until_remote_store_is_ready(&store).await;
@@ -290,11 +290,11 @@ where
 
 async fn make_remote_sqld_default_store(
     strategy: GlobalStrategy,
-) -> TempStore<SqliteSingleRemoteStore<GlobalStrategy, SqldDefaultProvisioner>> {
+) -> TempStore<SingleRemoteStore<GlobalStrategy, TestSqldDefaultProvisioner>> {
     let instance = shared_sqld_instance().await;
     let store = open_sqld_default_store_with_retry(
         strategy,
-        SqldDefaultProvisioner {
+        TestSqldDefaultProvisioner {
             url: instance.url.clone(),
         },
     )
@@ -309,14 +309,14 @@ async fn make_remote_sqld_default_store(
 
 async fn make_turso_store<S>(
     strategy: S,
-) -> TempStore<SqliteSingleRemoteStore<S, FixedRemoteTargetProvisioner>>
+) -> TempStore<SingleRemoteStore<S, FixedRemoteTargetProvisioner>>
 where
-    S: SqliteSingleRemotePartitionStrategy,
+    S: SingleRemotePartitionStrategy,
 {
     let url = std::env::var("TURSO_DATABASE_URL").unwrap();
     let auth_token = std::env::var("TURSO_AUTH_TOKEN").unwrap();
 
-    let store = SqliteEventStore::builder()
+    let store = EventStore::builder()
         .turso(FixedRemoteTargetProvisioner { url, auth_token })
         .strategy(strategy)
         .open()
@@ -331,12 +331,12 @@ where
 
 async fn open_sqld_default_store_with_retry(
     strategy: GlobalStrategy,
-    provisioner: SqldDefaultProvisioner,
-) -> SqliteSingleRemoteStore<GlobalStrategy, SqldDefaultProvisioner> {
+    provisioner: TestSqldDefaultProvisioner,
+) -> SingleRemoteStore<GlobalStrategy, TestSqldDefaultProvisioner> {
     let deadline = Instant::now() + Duration::from_secs(20);
 
     loop {
-        match SqliteEventStore::builder()
+        match EventStore::builder()
             .sqld_default(provisioner.clone())
             .strategy(strategy)
             .open()
@@ -355,15 +355,15 @@ async fn open_sqld_default_store_with_retry(
 
 async fn open_sqld_store_with_retry<S>(
     strategy: S,
-    provisioner: SqldNamespaceProvisioner,
-) -> SqliteNamedRemoteStore<S, SqldNamespaceProvisioner>
+    provisioner: TestSqldNamespaceProvisioner,
+) -> NamedRemoteStore<S, TestSqldNamespaceProvisioner>
 where
-    S: SqliteSqldNamespacedPartitionStrategy + SqlitePartitionNamingStrategy,
+    S: SqldNamespacedPartitionStrategy + PartitionNamingStrategy,
 {
     let deadline = Instant::now() + Duration::from_secs(20);
 
     loop {
-        match SqliteEventStore::builder()
+        match EventStore::builder()
             .sqld_namespaced(provisioner.clone())
             .strategy(strategy.clone())
             .open()
@@ -380,10 +380,10 @@ where
     }
 }
 
-async fn wait_until_remote_store_is_ready<S, C>(store: &SqliteEventStore<S, C>)
+async fn wait_until_remote_store_is_ready<S, C>(store: &EventStore<S, C>)
 where
-    S: SqlitePartitionStrategy,
-    C: SqlitePartitionCatalog<S::Partition>,
+    S: PartitionStrategy,
+    C: PartitionCatalog<S::Partition>,
 {
     let probe = AggregateId::new("health", "probe");
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -436,24 +436,21 @@ struct TempStore<T> {
     store: T,
 }
 
-impl<T> EventStore for TempStore<T>
+impl<T> EventStoreTrait for TempStore<T>
 where
-    T: EventStore,
+    T: EventStoreTrait,
 {
-    fn load(
-        &self,
-        id: &AggregateId,
-    ) -> impl std::future::Future<Output = Result<Aggregate, wee_events::Error>> + Send {
-        self.store.load(id)
+    async fn load(&self, id: &AggregateId) -> Result<Aggregate, wee_events::Error> {
+        self.store.load(id).await
     }
 
-    fn publish(
+    async fn publish(
         &self,
         aggregate_id: &AggregateId,
         options: PublishOptions,
         events: Vec<RawEvent>,
-    ) -> impl std::future::Future<Output = Result<ChangeSet, wee_events::Error>> + Send {
-        self.store.publish(aggregate_id, options, events)
+    ) -> Result<ChangeSet, wee_events::Error> {
+        self.store.publish(aggregate_id, options, events).await
     }
 }
 
@@ -471,28 +468,27 @@ struct SharedSqldInstance {
 static SHARED_SQLD: OnceCell<SharedSqldInstance> = OnceCell::const_new();
 
 #[derive(Debug, Clone)]
-struct SqldDefaultProvisioner {
+struct TestSqldDefaultProvisioner {
     url: String,
 }
 
-#[async_trait]
-impl SqliteSingleTargetProvisioner for SqldDefaultProvisioner {
-    async fn ensure_target(&self) -> Result<SqliteDatabaseTarget, Error> {
-        Ok(SqliteDatabaseTarget::SqldDefault {
+impl SingleTargetProvisioner for TestSqldDefaultProvisioner {
+    async fn ensure_target(&self) -> Result<DatabaseTarget, Error> {
+        Ok(DatabaseTarget::SqldDefault {
             url: self.url.clone(),
             auth_token: String::new(),
         })
     }
 
-    async fn existing_target(&self) -> Result<Option<SqliteDatabaseTarget>, Error> {
-        Ok(Some(SqliteDatabaseTarget::SqldDefault {
+    async fn existing_target(&self) -> Result<Option<DatabaseTarget>, Error> {
+        Ok(Some(DatabaseTarget::SqldDefault {
             url: self.url.clone(),
             auth_token: String::new(),
         }))
     }
 }
 
-impl SqliteSqldDefaultProvisioner for SqldDefaultProvisioner {}
+impl SqldDefaultProvisionerTrait for TestSqldDefaultProvisioner {}
 
 #[derive(Debug, Clone)]
 struct FixedRemoteTargetProvisioner {
@@ -500,34 +496,33 @@ struct FixedRemoteTargetProvisioner {
     auth_token: String,
 }
 
-#[async_trait]
-impl SqliteSingleTargetProvisioner for FixedRemoteTargetProvisioner {
-    async fn ensure_target(&self) -> Result<SqliteDatabaseTarget, Error> {
-        Ok(SqliteDatabaseTarget::Turso {
+impl SingleTargetProvisioner for FixedRemoteTargetProvisioner {
+    async fn ensure_target(&self) -> Result<DatabaseTarget, Error> {
+        Ok(DatabaseTarget::Turso {
             url: self.url.clone(),
             auth_token: self.auth_token.clone(),
         })
     }
 
-    async fn existing_target(&self) -> Result<Option<SqliteDatabaseTarget>, Error> {
-        Ok(Some(SqliteDatabaseTarget::Turso {
+    async fn existing_target(&self) -> Result<Option<DatabaseTarget>, Error> {
+        Ok(Some(DatabaseTarget::Turso {
             url: self.url.clone(),
             auth_token: self.auth_token.clone(),
         }))
     }
 }
 
-impl SqliteTursoProvisioner for FixedRemoteTargetProvisioner {}
+impl TursoProvisioner for FixedRemoteTargetProvisioner {}
 
 #[derive(Debug, Clone)]
-struct SqldNamespaceProvisioner {
+struct TestSqldNamespaceProvisioner {
     url: String,
     admin_url: String,
     known_names: Arc<Mutex<HashSet<String>>>,
     client: reqwest::Client,
 }
 
-impl SqldNamespaceProvisioner {
+impl TestSqldNamespaceProvisioner {
     fn new(url: String, admin_url: String) -> Self {
         Self {
             url,
@@ -537,14 +532,14 @@ impl SqldNamespaceProvisioner {
         }
     }
 
-    fn target_for_name(&self, name: Option<&str>) -> SqliteDatabaseTarget {
+    fn target_for_name(&self, name: Option<&str>) -> DatabaseTarget {
         match name {
-            Some(name) => SqliteDatabaseTarget::SqldNamespace {
+            Some(name) => DatabaseTarget::SqldNamespace {
                 url: self.url.clone(),
                 auth_token: String::new(),
                 namespace: format!("partition-{}", sanitize(name)),
             },
-            None => SqliteDatabaseTarget::SqldDefault {
+            None => DatabaseTarget::SqldDefault {
                 url: self.url.clone(),
                 auth_token: String::new(),
             },
@@ -552,12 +547,8 @@ impl SqldNamespaceProvisioner {
     }
 }
 
-#[async_trait]
-impl SqliteNamedTargetProvisioner for SqldNamespaceProvisioner {
-    async fn ensure_target_for_name(
-        &self,
-        name: Option<&str>,
-    ) -> Result<SqliteDatabaseTarget, Error> {
+impl NamedTargetProvisioner for TestSqldNamespaceProvisioner {
+    async fn ensure_target_for_name(&self, name: Option<&str>) -> Result<DatabaseTarget, Error> {
         let Some(name) = name else {
             return Ok(self.target_for_name(None));
         };
@@ -603,7 +594,7 @@ impl SqliteNamedTargetProvisioner for SqldNamespaceProvisioner {
     async fn target_for_existing_name(
         &self,
         name: Option<&str>,
-    ) -> Result<Option<SqliteDatabaseTarget>, Error> {
+    ) -> Result<Option<DatabaseTarget>, Error> {
         let Some(name) = name else {
             return Ok(Some(self.target_for_name(None)));
         };
@@ -621,7 +612,7 @@ impl SqliteNamedTargetProvisioner for SqldNamespaceProvisioner {
     }
 }
 
-impl SqliteSqldNamespacedProvisioner for SqldNamespaceProvisioner {}
+impl SqldNamespacedProvisioner for TestSqldNamespaceProvisioner {}
 
 trait LocalStorePath {
     fn local_store_path(temp_dir: &tempfile::TempDir) -> PathBuf;

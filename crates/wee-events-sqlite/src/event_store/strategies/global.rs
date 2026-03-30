@@ -5,9 +5,8 @@ use wee_events::{AggregateId, AggregateType};
 use crate::Error;
 
 use super::{
-    SqliteLocalPartitionLayout, SqliteLocalPartitionStrategy, SqlitePartitionNamingStrategy,
-    SqlitePartitionRead, SqlitePartitionStrategy, SqliteSingleRemotePartitionStrategy,
-    SqliteSqldNamespacedPartitionStrategy,
+    LocalPartitionLayout, LocalPartitionStrategy, PartitionNamingStrategy, PartitionRead,
+    PartitionStrategy, SingleRemotePartitionStrategy, SqldNamespacedPartitionStrategy,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -16,7 +15,7 @@ pub struct GlobalStrategy;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GlobalPartition;
 
-impl SqlitePartitionStrategy for GlobalStrategy {
+impl PartitionStrategy for GlobalStrategy {
     type Partition = GlobalPartition;
 
     fn bootstrap_partitions(&self) -> Vec<Self::Partition> {
@@ -30,20 +29,20 @@ impl SqlitePartitionStrategy for GlobalStrategy {
         Ok(GlobalPartition)
     }
 
-    fn read_plan(&self, _partition: &Self::Partition) -> SqlitePartitionRead {
-        SqlitePartitionRead::ScanAll
+    fn read_plan(&self, _partition: &Self::Partition) -> PartitionRead {
+        PartitionRead::ScanAll
     }
 
     fn read_plan_by_type(
         &self,
         _partition: &Self::Partition,
         aggregate_type: &AggregateType,
-    ) -> SqlitePartitionRead {
-        SqlitePartitionRead::ScanType(aggregate_type.clone())
+    ) -> PartitionRead {
+        PartitionRead::ScanType(aggregate_type.clone())
     }
 }
 
-impl SqlitePartitionNamingStrategy for GlobalStrategy {
+impl PartitionNamingStrategy for GlobalStrategy {
     fn partition_name<'a>(&self, _partition: &'a Self::Partition) -> Option<&'a str> {
         None
     }
@@ -55,16 +54,16 @@ impl SqlitePartitionNamingStrategy for GlobalStrategy {
     }
 }
 
-impl SqliteLocalPartitionStrategy for GlobalStrategy {
+impl LocalPartitionStrategy for GlobalStrategy {
     fn initialize_root(&self, _root: &Path) -> Result<(), Error> {
         Ok(())
     }
 
-    fn local_partition_layout(&self) -> SqliteLocalPartitionLayout {
-        SqliteLocalPartitionLayout::SingleDatabase
+    fn local_partition_layout(&self) -> LocalPartitionLayout {
+        LocalPartitionLayout::SingleDatabase
     }
 }
 
-impl SqliteSingleRemotePartitionStrategy for GlobalStrategy {}
+impl SingleRemotePartitionStrategy for GlobalStrategy {}
 
-impl SqliteSqldNamespacedPartitionStrategy for GlobalStrategy {}
+impl SqldNamespacedPartitionStrategy for GlobalStrategy {}

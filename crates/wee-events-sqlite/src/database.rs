@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use libsql::{Builder, Connection};
 
-use crate::{event_store::SqliteDatabaseTarget, Error};
+use crate::{event_store::DatabaseTarget, Error};
 
 const EVENT_STORE_SCHEMA_VERSION: u32 = 1;
 const DOCUMENT_STORE_SCHEMA_VERSION: u32 = 1;
@@ -37,16 +37,16 @@ CREATE TABLE IF NOT EXISTS documents (
 ";
 
 pub(crate) async fn open_event_store_connection(
-    target: &SqliteDatabaseTarget,
+    target: &DatabaseTarget,
 ) -> Result<Connection, Error> {
     let conn = match target {
-        SqliteDatabaseTarget::InMemory => {
+        DatabaseTarget::InMemory => {
             let db = Builder::new_local(":memory:").build().await?;
             let conn = db.connect()?;
             prepare_local_connection(&conn).await?;
             conn
         }
-        SqliteDatabaseTarget::Local(path) => {
+        DatabaseTarget::Local(path) => {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -55,8 +55,8 @@ pub(crate) async fn open_event_store_connection(
             prepare_local_connection(&conn).await?;
             conn
         }
-        SqliteDatabaseTarget::SqldDefault { url, auth_token }
-        | SqliteDatabaseTarget::Turso { url, auth_token } => {
+        DatabaseTarget::SqldDefault { url, auth_token }
+        | DatabaseTarget::Turso { url, auth_token } => {
             let db = Builder::new_remote(url.clone(), auth_token.clone())
                 .build()
                 .await?;
@@ -64,7 +64,7 @@ pub(crate) async fn open_event_store_connection(
             prepare_remote_connection(&conn).await?;
             conn
         }
-        SqliteDatabaseTarget::SqldNamespace {
+        DatabaseTarget::SqldNamespace {
             url,
             auth_token,
             namespace,

@@ -5,9 +5,8 @@ use wee_events::{AggregateId, AggregateType};
 use crate::Error;
 
 use super::{
-    NamedPartition, SqliteLocalPartitionLayout, SqliteLocalPartitionStrategy,
-    SqlitePartitionNamingStrategy, SqlitePartitionRead, SqlitePartitionStrategy,
-    SqliteSqldNamespacedPartitionStrategy,
+    LocalPartitionLayout, LocalPartitionStrategy, NamedPartition, PartitionNamingStrategy,
+    PartitionRead, PartitionStrategy, SqldNamespacedPartitionStrategy,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -15,7 +14,7 @@ pub struct TypeStrategy;
 
 pub type TypePartition = NamedPartition<AggregateType>;
 
-impl SqlitePartitionStrategy for TypeStrategy {
+impl PartitionStrategy for TypeStrategy {
     type Partition = TypePartition;
 
     fn partition_for_aggregate(
@@ -29,24 +28,24 @@ impl SqlitePartitionStrategy for TypeStrategy {
         ))
     }
 
-    fn read_plan(&self, partition: &Self::Partition) -> SqlitePartitionRead {
-        SqlitePartitionRead::ScanType(partition.key().clone())
+    fn read_plan(&self, partition: &Self::Partition) -> PartitionRead {
+        PartitionRead::ScanType(partition.key().clone())
     }
 
     fn read_plan_by_type(
         &self,
         partition: &Self::Partition,
         aggregate_type: &AggregateType,
-    ) -> SqlitePartitionRead {
+    ) -> PartitionRead {
         if partition.key() == aggregate_type {
-            SqlitePartitionRead::ScanType(aggregate_type.clone())
+            PartitionRead::ScanType(aggregate_type.clone())
         } else {
-            SqlitePartitionRead::Skip
+            PartitionRead::Skip
         }
     }
 }
 
-impl SqlitePartitionNamingStrategy for TypeStrategy {
+impl PartitionNamingStrategy for TypeStrategy {
     fn partition_name<'a>(&self, partition: &'a Self::Partition) -> Option<&'a str> {
         Some(partition.name())
     }
@@ -60,18 +59,18 @@ impl SqlitePartitionNamingStrategy for TypeStrategy {
     }
 }
 
-impl SqliteLocalPartitionStrategy for TypeStrategy {
+impl LocalPartitionStrategy for TypeStrategy {
     fn initialize_root(&self, root: &Path) -> Result<(), Error> {
         std::fs::create_dir_all(root)?;
         Ok(())
     }
 
-    fn local_partition_layout(&self) -> SqliteLocalPartitionLayout {
-        SqliteLocalPartitionLayout::NamedDatabases
+    fn local_partition_layout(&self) -> LocalPartitionLayout {
+        LocalPartitionLayout::NamedDatabases
     }
 }
 
-impl SqliteSqldNamespacedPartitionStrategy for TypeStrategy {}
+impl SqldNamespacedPartitionStrategy for TypeStrategy {}
 
 #[cfg(test)]
 mod tests {

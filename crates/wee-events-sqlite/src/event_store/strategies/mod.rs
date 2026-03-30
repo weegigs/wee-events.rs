@@ -18,19 +18,19 @@ pub use hashed::{BucketPartition, HashedStrategy};
 pub use partition_by::PartitionByStrategy;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SqlitePartitionRead {
+pub enum PartitionRead {
     ScanAll,
     ScanType(AggregateType),
     Direct(AggregateId),
     Skip,
 }
 
-pub trait SqlitePartitionKey: Clone + Debug + Eq + Hash + Send + Sync + 'static {}
+pub trait PartitionKey: Clone + Debug + Eq + Hash + Send + Sync + 'static {}
 
-impl<T> SqlitePartitionKey for T where T: Clone + Debug + Eq + Hash + Send + Sync + 'static {}
+impl<T> PartitionKey for T where T: Clone + Debug + Eq + Hash + Send + Sync + 'static {}
 
-pub trait SqlitePartitionStrategy: Clone + Send + Sync + 'static {
-    type Partition: SqlitePartitionKey;
+pub trait PartitionStrategy: Clone + Send + Sync + 'static {
+    type Partition: PartitionKey;
 
     fn bootstrap_partitions(&self) -> Vec<Self::Partition> {
         Vec::new()
@@ -39,13 +39,13 @@ pub trait SqlitePartitionStrategy: Clone + Send + Sync + 'static {
     fn partition_for_aggregate(&self, aggregate_id: &AggregateId)
         -> Result<Self::Partition, Error>;
 
-    fn read_plan(&self, partition: &Self::Partition) -> SqlitePartitionRead;
+    fn read_plan(&self, partition: &Self::Partition) -> PartitionRead;
 
     fn read_plan_by_type(
         &self,
         partition: &Self::Partition,
         aggregate_type: &AggregateType,
-    ) -> SqlitePartitionRead;
+    ) -> PartitionRead;
 }
 
 /// Adds a stable backend-facing name for a logical partition.
@@ -57,7 +57,7 @@ pub trait SqlitePartitionStrategy: Clone + Send + Sync + 'static {
 /// - other backends may use the name as an in-process routing key
 ///
 /// A partition name does not imply anything about on-disk filenames.
-pub trait SqlitePartitionNamingStrategy: SqlitePartitionStrategy {
+pub trait PartitionNamingStrategy: PartitionStrategy {
     fn partition_name<'a>(&self, partition: &'a Self::Partition) -> Option<&'a str>;
 
     fn partition_from_name(&self, name: &str) -> Result<Self::Partition, Error>;
@@ -67,18 +67,18 @@ pub trait SqlitePartitionNamingStrategy: SqlitePartitionStrategy {
 ///
 /// Local storage uses `partition_name()` plus the layout to derive concrete file
 /// paths. Strategies do not encode filenames themselves.
-pub trait SqliteLocalPartitionStrategy: SqlitePartitionNamingStrategy {
+pub trait LocalPartitionStrategy: PartitionNamingStrategy {
     fn initialize_root(&self, root: &Path) -> Result<(), Error>;
 
-    fn local_partition_layout(&self) -> SqliteLocalPartitionLayout;
+    fn local_partition_layout(&self) -> LocalPartitionLayout;
 }
 
-pub trait SqliteSingleRemotePartitionStrategy: SqlitePartitionStrategy {}
+pub trait SingleRemotePartitionStrategy: PartitionStrategy {}
 
-pub trait SqliteSqldNamespacedPartitionStrategy: SqlitePartitionStrategy {}
+pub trait SqldNamespacedPartitionStrategy: PartitionStrategy {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SqliteLocalPartitionLayout {
+pub enum LocalPartitionLayout {
     /// A single database file at the configured root path.
     SingleDatabase,
     /// One database file per logical partition name.

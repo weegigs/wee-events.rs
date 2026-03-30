@@ -1,7 +1,6 @@
 use crate::Error;
-use async_trait::async_trait;
 
-use super::super::types::{SqliteDatabaseTarget, SqliteSingleTargetProvisioner};
+use super::super::types::{DatabaseTarget, SingleTargetProvisioner};
 
 #[derive(Debug)]
 pub struct InMemoryTargetResolver;
@@ -12,13 +11,12 @@ impl Default for InMemoryTargetResolver {
     }
 }
 
-#[async_trait]
-impl SqliteSingleTargetProvisioner for InMemoryTargetResolver {
-    async fn ensure_target(&self) -> Result<SqliteDatabaseTarget, Error> {
-        Ok(SqliteDatabaseTarget::InMemory)
+impl SingleTargetProvisioner for InMemoryTargetResolver {
+    async fn ensure_target(&self) -> Result<DatabaseTarget, Error> {
+        Ok(DatabaseTarget::InMemory)
     }
 
-    async fn existing_target(&self) -> Result<Option<SqliteDatabaseTarget>, Error> {
-        Ok(Some(SqliteDatabaseTarget::InMemory))
+    async fn existing_target(&self) -> Result<Option<DatabaseTarget>, Error> {
+        Ok(Some(DatabaseTarget::InMemory))
     }
 }

@@ -6,9 +6,8 @@ use wee_events::{AggregateId, AggregateType};
 use crate::Error;
 
 use super::{
-    NamedPartition, SqliteLocalPartitionLayout, SqliteLocalPartitionStrategy,
-    SqlitePartitionNamingStrategy, SqlitePartitionRead, SqlitePartitionStrategy,
-    SqliteSqldNamespacedPartitionStrategy,
+    LocalPartitionLayout, LocalPartitionStrategy, NamedPartition, PartitionNamingStrategy,
+    PartitionRead, PartitionStrategy, SqldNamespacedPartitionStrategy,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +27,7 @@ impl HashedStrategy {
 
 pub type BucketPartition = NamedPartition<u32>;
 
-impl SqlitePartitionStrategy for HashedStrategy {
+impl PartitionStrategy for HashedStrategy {
     type Partition = BucketPartition;
 
     fn partition_for_aggregate(
@@ -39,20 +38,20 @@ impl SqlitePartitionStrategy for HashedStrategy {
         Ok(BucketPartition::new(format!("bucket-{bucket}"), bucket))
     }
 
-    fn read_plan(&self, _partition: &Self::Partition) -> SqlitePartitionRead {
-        SqlitePartitionRead::ScanAll
+    fn read_plan(&self, _partition: &Self::Partition) -> PartitionRead {
+        PartitionRead::ScanAll
     }
 
     fn read_plan_by_type(
         &self,
         _partition: &Self::Partition,
         aggregate_type: &AggregateType,
-    ) -> SqlitePartitionRead {
-        SqlitePartitionRead::ScanType(aggregate_type.clone())
+    ) -> PartitionRead {
+        PartitionRead::ScanType(aggregate_type.clone())
     }
 }
 
-impl SqlitePartitionNamingStrategy for HashedStrategy {
+impl PartitionNamingStrategy for HashedStrategy {
     fn partition_name<'a>(&self, partition: &'a Self::Partition) -> Option<&'a str> {
         Some(partition.name())
     }
@@ -69,18 +68,18 @@ impl SqlitePartitionNamingStrategy for HashedStrategy {
     }
 }
 
-impl SqliteLocalPartitionStrategy for HashedStrategy {
+impl LocalPartitionStrategy for HashedStrategy {
     fn initialize_root(&self, root: &Path) -> Result<(), Error> {
         std::fs::create_dir_all(root)?;
         Ok(())
     }
 
-    fn local_partition_layout(&self) -> SqliteLocalPartitionLayout {
-        SqliteLocalPartitionLayout::NamedDatabases
+    fn local_partition_layout(&self) -> LocalPartitionLayout {
+        LocalPartitionLayout::NamedDatabases
     }
 }
 
-impl SqliteSqldNamespacedPartitionStrategy for HashedStrategy {}
+impl SqldNamespacedPartitionStrategy for HashedStrategy {}
 
 fn hash_aggregate_id(aggregate_id: &AggregateId) -> u32 {
     let mut hash = 0x811c9dc5_u32;

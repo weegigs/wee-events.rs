@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 use libsql::Builder;
 use serde::{Deserialize, Serialize};
 use wee_events::{
-    AggregateId, AggregateType, EventData, EventStore, EventType, PublishOptions, RawEvent,
+    AggregateId, AggregateType, EventData, EventStore as _, EventType, PublishOptions, RawEvent,
     ReduceFn, Renderer, Revision,
 };
 use wee_events_sqlite::{
-    AggregateStrategy, DocumentStore, GlobalStrategy, HashedStrategy, PartitionByStrategy,
-    SqliteEventStore, SqliteLocalPartitionStrategy, TypeStrategy,
+    AggregateStrategy, DocumentStore, EventStore, GlobalStrategy, HashedStrategy,
+    LocalPartitionStrategy, PartitionByStrategy, TypeStrategy,
 };
 
 trait LocalStorePath {
@@ -62,7 +62,7 @@ async fn test_document_store() -> DocumentStore {
 struct SharedStores {
     event_db_path: PathBuf,
     document_db_path: PathBuf,
-    event_store: SqliteEventStore,
+    event_store: EventStore,
     document_store: DocumentStore,
 }
 
@@ -75,7 +75,7 @@ impl SharedStores {
             "wee-events-sqlite-documents-{}.db",
             ulid::Ulid::new()
         ));
-        let event_store = SqliteEventStore::builder()
+        let event_store = EventStore::builder()
             .local(&event_db_path)
             .strategy(GlobalStrategy)
             .open()
@@ -316,7 +316,7 @@ async fn event_store_open_only_creates_event_schema() {
         "wee-events-sqlite-events-only-{}.db",
         ulid::Ulid::new()
     ));
-    let _store = SqliteEventStore::builder()
+    let _store = EventStore::builder()
         .local(&db_path)
         .strategy(GlobalStrategy)
         .open()
@@ -369,10 +369,10 @@ async fn enumerate_aggregates_by_type_works_across_partitioning_strategies() {
 
 async fn assert_enumerates_aggregates<S>(strategy: S)
 where
-    S: SqliteLocalPartitionStrategy + LocalStorePath,
+    S: LocalPartitionStrategy + LocalStorePath,
 {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = SqliteEventStore::builder()
+    let store = EventStore::builder()
         .local(S::local_store_path(&temp_dir))
         .strategy(strategy)
         .open()
@@ -401,10 +401,10 @@ where
 
 async fn assert_enumerates_aggregates_by_type<S>(strategy: S)
 where
-    S: SqliteLocalPartitionStrategy + LocalStorePath,
+    S: LocalPartitionStrategy + LocalStorePath,
 {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = SqliteEventStore::builder()
+    let store = EventStore::builder()
         .local(S::local_store_path(&temp_dir))
         .strategy(strategy)
         .open()

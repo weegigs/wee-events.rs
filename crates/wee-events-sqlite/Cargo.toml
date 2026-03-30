@@ -15,7 +15,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
-async-trait = "0.1"
 data-encoding = "2"
 
 [dev-dependencies]
