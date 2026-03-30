@@ -8,8 +8,8 @@ use wee_events::{
     ReduceFn, Renderer, Revision,
 };
 use wee_events_sqlite::{
-    AggregateStrategy, DocumentStore, GlobalStrategy, HashedStrategy, SqliteEventStore,
-    SqliteLocalPartitionStrategy, TypeStrategy,
+    AggregateStrategy, DocumentStore, GlobalStrategy, HashedStrategy, PartitionByStrategy,
+    SqliteEventStore, SqliteLocalPartitionStrategy, TypeStrategy,
 };
 
 trait LocalStorePath {
@@ -38,6 +38,21 @@ impl LocalStorePath for HashedStrategy {
     fn local_store_path(temp_dir: &tempfile::TempDir) -> PathBuf {
         temp_dir.path().to_path_buf()
     }
+}
+
+impl LocalStorePath for PartitionByStrategy<fn(&AggregateId) -> String> {
+    fn local_store_path(temp_dir: &tempfile::TempDir) -> PathBuf {
+        temp_dir.path().to_path_buf()
+    }
+}
+
+fn partition_by_user(aggregate_id: &AggregateId) -> String {
+    aggregate_id
+        .aggregate_key
+        .split(':')
+        .next()
+        .expect("split always yields at least one segment")
+        .to_string()
 }
 
 async fn test_document_store() -> DocumentStore {
@@ -334,6 +349,10 @@ async fn enumerate_aggregates_works_across_partitioning_strategies() {
     assert_enumerates_aggregates(TypeStrategy).await;
     assert_enumerates_aggregates(AggregateStrategy).await;
     assert_enumerates_aggregates(HashedStrategy::new(NonZeroU32::new(8).unwrap())).await;
+    assert_enumerates_aggregates(PartitionByStrategy::new(
+        partition_by_user as fn(&AggregateId) -> String,
+    ))
+    .await;
 }
 
 #[tokio::test]
@@ -342,6 +361,10 @@ async fn enumerate_aggregates_by_type_works_across_partitioning_strategies() {
     assert_enumerates_aggregates_by_type(TypeStrategy).await;
     assert_enumerates_aggregates_by_type(AggregateStrategy).await;
     assert_enumerates_aggregates_by_type(HashedStrategy::new(NonZeroU32::new(8).unwrap())).await;
+    assert_enumerates_aggregates_by_type(PartitionByStrategy::new(
+        partition_by_user as fn(&AggregateId) -> String,
+    ))
+    .await;
 }
 
 async fn assert_enumerates_aggregates<S>(strategy: S)

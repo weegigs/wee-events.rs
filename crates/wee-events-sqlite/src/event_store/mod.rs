@@ -8,9 +8,10 @@ pub use store::SqliteEventStore;
 pub use store::{SqliteInMemoryStore, SqliteLocalStore, SqliteRemoteStore};
 pub use strategies::{
     AggregatePartition, AggregateStrategy, BucketPartition, GlobalPartition, GlobalStrategy,
-    HashedStrategy, SqliteLocalPartitionStrategy, SqlitePartitionKey, SqlitePartitionRead,
-    SqlitePartitionStrategy, SqliteSingleRemotePartitionStrategy,
-    SqliteSqldNamespacedPartitionStrategy, TypePartition, TypeStrategy,
+    HashedStrategy, NamedPartition, PartitionByStrategy, SqliteLocalPartitionStrategy,
+    SqlitePartitionKey, SqlitePartitionRead, SqlitePartitionStrategy,
+    SqliteSingleRemotePartitionStrategy, SqliteSqldNamespacedPartitionStrategy, TypePartition,
+    TypeStrategy,
 };
 pub use types::{
     SqliteDatabaseTarget, SqlitePartitionCatalog, SqliteSqldDefaultProvisioner,

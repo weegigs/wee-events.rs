@@ -6,7 +6,7 @@ use wee_events::{AggregateId, AggregateType};
 use crate::Error;
 
 use super::{
-    SqliteLocalPartitionStrategy, SqlitePartitionRead, SqlitePartitionStrategy,
+    NamedPartition, SqliteLocalPartitionStrategy, SqlitePartitionRead, SqlitePartitionStrategy,
     SqliteSqldNamespacedPartitionStrategy,
 };
 
@@ -25,8 +25,7 @@ impl HashedStrategy {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct BucketPartition(pub u32);
+pub type BucketPartition = NamedPartition<u32>;
 
 impl SqlitePartitionStrategy for HashedStrategy {
     type Partition = BucketPartition;
@@ -35,9 +34,8 @@ impl SqlitePartitionStrategy for HashedStrategy {
         &self,
         aggregate_id: &AggregateId,
     ) -> Result<Self::Partition, Error> {
-        Ok(BucketPartition(
-            hash_aggregate_id(aggregate_id) % self.buckets.get(),
-        ))
+        let bucket = hash_aggregate_id(aggregate_id) % self.buckets.get();
+        Ok(BucketPartition::new(format!("bucket-{bucket}"), bucket))
     }
 
     fn read_plan(&self, _partition: &Self::Partition) -> SqlitePartitionRead {
@@ -64,7 +62,7 @@ impl SqliteLocalPartitionStrategy for HashedStrategy {
         root: &Path,
         partition: &Self::Partition,
     ) -> Result<PathBuf, Error> {
-        Ok(root.join(format!("bucket-{}.db", partition.0)))
+        Ok(root.join(format!("{}.db", partition.name())))
     }
 
     fn discover_partitions(&self, root: &Path) -> Result<Vec<Self::Partition>, Error> {
@@ -85,7 +83,7 @@ impl SqliteLocalPartitionStrategy for HashedStrategy {
             let Ok(bucket) = bucket.parse::<u32>() else {
                 continue;
             };
-            partitions.push(BucketPartition(bucket));
+            partitions.push(BucketPartition::new(format!("bucket-{bucket}"), bucket));
         }
         Ok(partitions)
     }

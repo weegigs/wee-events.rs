@@ -5,15 +5,14 @@ use wee_events::{AggregateId, AggregateType};
 use crate::Error;
 
 use super::{
-    decode_path_component, encode_path_component, SqliteLocalPartitionStrategy,
+    decode_path_component, encode_path_component, NamedPartition, SqliteLocalPartitionStrategy,
     SqlitePartitionRead, SqlitePartitionStrategy, SqliteSqldNamespacedPartitionStrategy,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AggregateStrategy;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct AggregatePartition(pub AggregateId);
+pub type AggregatePartition = NamedPartition<AggregateId>;
 
 impl SqlitePartitionStrategy for AggregateStrategy {
     type Partition = AggregatePartition;
@@ -22,11 +21,14 @@ impl SqlitePartitionStrategy for AggregateStrategy {
         &self,
         aggregate_id: &AggregateId,
     ) -> Result<Self::Partition, Error> {
-        Ok(AggregatePartition(aggregate_id.clone()))
+        Ok(AggregatePartition::new(
+            aggregate_id.to_string(),
+            aggregate_id.clone(),
+        ))
     }
 
     fn read_plan(&self, partition: &Self::Partition) -> SqlitePartitionRead {
-        SqlitePartitionRead::Direct(partition.0.clone())
+        SqlitePartitionRead::Direct(partition.key().clone())
     }
 
     fn read_plan_by_type(
@@ -34,8 +36,8 @@ impl SqlitePartitionStrategy for AggregateStrategy {
         partition: &Self::Partition,
         aggregate_type: &AggregateType,
     ) -> SqlitePartitionRead {
-        if &partition.0.aggregate_type == aggregate_type {
-            SqlitePartitionRead::Direct(partition.0.clone())
+        if &partition.key().aggregate_type == aggregate_type {
+            SqlitePartitionRead::Direct(partition.key().clone())
         } else {
             SqlitePartitionRead::Skip
         }
@@ -54,11 +56,8 @@ impl SqliteLocalPartitionStrategy for AggregateStrategy {
         partition: &Self::Partition,
     ) -> Result<PathBuf, Error> {
         Ok(root
-            .join(encode_path_component(partition.0.aggregate_type.as_str()))
-            .join(format!(
-                "{}.db",
-                encode_path_component(&partition.0.aggregate_key)
-            )))
+            .join(encode_path_component(partition.name()))
+            .join("partition.db"))
     }
 
     fn discover_partitions(&self, root: &Path) -> Result<Vec<Self::Partition>, Error> {
@@ -69,7 +68,7 @@ impl SqliteLocalPartitionStrategy for AggregateStrategy {
                 continue;
             }
 
-            let aggregate_type = decode_path_component(&entry.file_name().to_string_lossy())?;
+            let aggregate_id = decode_path_component(&entry.file_name().to_string_lossy())?;
             for child in std::fs::read_dir(entry.path())? {
                 let child = child?;
                 let child_path = child.path();
@@ -82,11 +81,18 @@ impl SqliteLocalPartitionStrategy for AggregateStrategy {
                 let Some(stem) = child_path.file_stem() else {
                     continue;
                 };
-                let aggregate_key = decode_path_component(&stem.to_string_lossy())?;
-                partitions.push(AggregatePartition(AggregateId::new(
-                    aggregate_type.clone(),
-                    aggregate_key,
-                )));
+                if stem != "partition" {
+                    continue;
+                }
+                let aggregate_id = aggregate_id.parse::<AggregateId>().map_err(|error| {
+                    Error::Configuration(format!(
+                        "invalid aggregate partition name '{aggregate_id}': {error}"
+                    ))
+                })?;
+                partitions.push(AggregatePartition::new(
+                    aggregate_id.to_string(),
+                    aggregate_id,
+                ));
             }
         }
         Ok(partitions)
@@ -101,7 +107,8 @@ mod tests {
 
     #[test]
     fn path_for_partition_encodes_type_and_key() {
-        let partition = AggregatePartition(AggregateId::new("campaign/run", "urn:uuid:abc/123"));
+        let aggregate_id = AggregateId::new("campaign/run", "urn:uuid:abc/123");
+        let partition = AggregatePartition::new(aggregate_id.to_string(), aggregate_id);
         let path = AggregateStrategy
             .path_for_partition(Path::new("/tmp/root"), &partition)
             .expect("path generation should succeed");
@@ -111,24 +118,19 @@ mod tests {
             .and_then(Path::file_name)
             .expect("parent directory name should be present")
             .to_string_lossy();
-        let file_name = path
-            .file_name()
-            .expect("file name should be present")
-            .to_string_lossy();
+        let file_name = path.file_name().expect("file name should be present");
 
         assert!(parent.starts_with("b32-"));
-        assert!(file_name.starts_with("b32-"));
         assert!(!parent.contains('/'));
         assert!(!parent.contains('\\'));
-        assert!(!file_name.contains('/'));
-        assert!(!file_name.contains('\\'));
-        assert!(!file_name.contains(':'));
+        assert_eq!(file_name, "partition.db");
     }
 
     #[test]
     fn discover_partitions_decodes_encoded_names() {
         let temp_dir = tempfile::tempdir().expect("tempdir should succeed");
-        let partition = AggregatePartition(AggregateId::new("campaign/run", "urn:uuid:abc/123"));
+        let aggregate_id = AggregateId::new("campaign/run", "urn:uuid:abc/123");
+        let partition = AggregatePartition::new(aggregate_id.to_string(), aggregate_id);
         let path = AggregateStrategy
             .path_for_partition(temp_dir.path(), &partition)
             .expect("path generation should succeed");

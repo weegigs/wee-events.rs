@@ -11,11 +11,13 @@ mod by_aggregate;
 mod by_type;
 mod global;
 mod hashed;
+mod partition_by;
 
 pub use by_aggregate::{AggregatePartition, AggregateStrategy};
 pub use by_type::{TypePartition, TypeStrategy};
 pub use global::{GlobalPartition, GlobalStrategy};
 pub use hashed::{BucketPartition, HashedStrategy};
+pub use partition_by::PartitionByStrategy;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SqlitePartitionRead {
@@ -63,6 +65,33 @@ pub trait SqliteLocalPartitionStrategy: SqlitePartitionStrategy {
 pub trait SqliteSingleRemotePartitionStrategy: SqlitePartitionStrategy {}
 
 pub trait SqliteSqldNamespacedPartitionStrategy: SqlitePartitionStrategy {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NamedPartition<T> {
+    name: String,
+    key: T,
+}
+
+impl<T> NamedPartition<T> {
+    pub fn new(name: impl Into<String>, key: T) -> Self {
+        Self {
+            name: name.into(),
+            key,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn key(&self) -> &T {
+        &self.key
+    }
+
+    pub fn into_key(self) -> T {
+        self.key
+    }
+}
 
 const ENCODED_PATH_PREFIX: &str = "b32-";
 

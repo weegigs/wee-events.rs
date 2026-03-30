@@ -19,8 +19,8 @@ use tokio::time::sleep;
 use wee_events::{Aggregate, AggregateId, ChangeSet, EventStore, PublishOptions, RawEvent};
 use wee_events_sqlite::{
     AggregatePartition, AggregateStrategy, BucketPartition, Error, GlobalPartition, GlobalStrategy,
-    HashedStrategy, SqliteDatabaseTarget, SqliteEventStore, SqliteInMemoryStore,
-    SqliteLocalPartitionStrategy, SqliteLocalStore, SqlitePartitionCatalog,
+    HashedStrategy, NamedPartition, PartitionByStrategy, SqliteDatabaseTarget, SqliteEventStore,
+    SqliteInMemoryStore, SqliteLocalPartitionStrategy, SqliteLocalStore, SqlitePartitionCatalog,
     SqlitePartitionStrategy, SqliteRemoteStore, SqliteSingleRemotePartitionStrategy,
     SqliteSqldDefaultProvisioner, SqliteSqldNamespacedPartitionStrategy,
     SqliteSqldNamespacedProvisioner, SqliteTargetProvisioner, SqliteTursoProvisioner,
@@ -173,6 +173,13 @@ wee_events::testing::store_test_suite!(
     sqlite_store_in_memory_hashed,
     make_in_memory_store(HashedStrategy::new(NonZeroU32::new(8).unwrap())).await
 );
+wee_events::testing::store_test_suite!(
+    sqlite_store_in_memory_partition_by,
+    make_in_memory_store(PartitionByStrategy::new(
+        partition_by_user as fn(&AggregateId) -> String,
+    ))
+    .await
+);
 
 wee_events::testing::store_test_suite!(
     sqlite_store_local_single,
@@ -189,6 +196,13 @@ wee_events::testing::store_test_suite!(
 wee_events::testing::store_test_suite!(
     sqlite_store_local_hashed,
     make_local_store(HashedStrategy::new(NonZeroU32::new(8).unwrap())).await
+);
+wee_events::testing::store_test_suite!(
+    sqlite_store_local_partition_by,
+    make_local_store(PartitionByStrategy::new(
+        partition_by_user as fn(&AggregateId) -> String,
+    ))
+    .await
 );
 
 wee_events::testing::store_test_suite!(
@@ -210,6 +224,13 @@ wee_events::testing::store_test_suite!(
 wee_events::testing::store_test_suite!(
     sqlite_store_remote_sqld_hashed,
     make_remote_sqld_store(HashedStrategy::new(NonZeroU32::new(8).unwrap())).await
+);
+wee_events::testing::store_test_suite!(
+    sqlite_store_remote_sqld_partition_by,
+    make_remote_sqld_store(PartitionByStrategy::new(
+        partition_by_user as fn(&AggregateId) -> String,
+    ))
+    .await
 );
 
 optional_store_test_suite!(sqlite_store_turso_single, make_turso_store(GlobalStrategy));
@@ -673,8 +694,23 @@ impl LocalStorePath for HashedStrategy {
     }
 }
 
+impl LocalStorePath for PartitionByStrategy<fn(&AggregateId) -> String> {
+    fn local_store_path(temp_dir: &tempfile::TempDir) -> PathBuf {
+        temp_dir.path().to_path_buf()
+    }
+}
+
 trait PartitionNamespace: Clone + Eq + std::hash::Hash + Send + Sync + 'static {
     fn namespace(&self) -> Option<String>;
+}
+
+fn partition_by_user(aggregate_id: &AggregateId) -> String {
+    aggregate_id
+        .aggregate_key
+        .split(':')
+        .next()
+        .expect("split always yields at least one segment")
+        .to_string()
 }
 
 impl PartitionNamespace for GlobalPartition {
@@ -685,13 +721,13 @@ impl PartitionNamespace for GlobalPartition {
 
 impl PartitionNamespace for TypePartition {
     fn namespace(&self) -> Option<String> {
-        Some(format!("type-{}", sanitize(self.0.as_str())))
+        Some(format!("type-{}", sanitize(self.key().as_str())))
     }
 }
 
 impl PartitionNamespace for BucketPartition {
     fn namespace(&self) -> Option<String> {
-        Some(format!("bucket-{}", self.0))
+        Some(format!("bucket-{}", self.key()))
     }
 }
 
@@ -699,9 +735,15 @@ impl PartitionNamespace for AggregatePartition {
     fn namespace(&self) -> Option<String> {
         Some(format!(
             "agg-{}-{}",
-            sanitize(self.0.aggregate_type.as_str()),
-            sanitize(&self.0.aggregate_key)
+            sanitize(self.key().aggregate_type.as_str()),
+            sanitize(&self.key().aggregate_key)
         ))
+    }
+}
+
+impl PartitionNamespace for NamedPartition<String> {
+    fn namespace(&self) -> Option<String> {
+        Some(format!("partition-{}", sanitize(self.name())))
     }
 }
 
