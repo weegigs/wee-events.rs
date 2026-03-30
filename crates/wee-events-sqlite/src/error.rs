@@ -24,7 +24,7 @@ impl From<Error> for wee_events::Error {
         match error {
             Error::WeeEvents(inner) => inner,
             Error::Serialization(inner) => wee_events::Error::Serialization(inner),
-            other => wee_events::Error::Store(other.to_string()),
+            other => wee_events::Error::Store(Box::new(other)),
         }
     }
 }
@@ -49,8 +49,7 @@ mod tests {
     fn sqlite_internal_errors_become_domain_store_errors() {
         let error: wee_events::Error = Error::Internal("boom".to_string()).into();
 
-        assert!(
-            matches!(error, wee_events::Error::Store(message) if message == "internal error: boom")
-        );
+        assert!(matches!(error, wee_events::Error::Store(_)));
+        assert_eq!(error.to_string(), "internal error: boom");
     }
 }

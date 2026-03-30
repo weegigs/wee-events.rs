@@ -18,7 +18,7 @@ pub async fn apply_projection<S: Default + Serialize>(
     document_store
         .upsert(
             collection,
-            &changeset.aggregate_id.aggregate_key,
+            changeset.aggregate_id.aggregate_key(),
             &entity.revision,
             &document,
         )
@@ -43,7 +43,7 @@ pub async fn rebuild_projection<S: Default + Serialize>(
         let aggregate = event_store.load(&aggregate_id).await?;
 
         if let Some(document) = document_store
-            .get(collection, &aggregate_id.aggregate_key)
+            .get(collection, aggregate_id.aggregate_key())
             .await?
         {
             if document.revision == *aggregate.revision() {
@@ -57,7 +57,7 @@ pub async fn rebuild_projection<S: Default + Serialize>(
         document_store
             .upsert(
                 collection,
-                &aggregate_id.aggregate_key,
+                aggregate_id.aggregate_key(),
                 &entity.revision,
                 &document,
             )

@@ -10,8 +10,8 @@ fn display_format() {
 #[test]
 fn parse_simple() {
     let id: AggregateId = "campaign:c1".parse().unwrap();
-    assert_eq!(id.aggregate_type.as_str(), "campaign");
-    assert_eq!(id.aggregate_key, "c1");
+    assert_eq!(id.aggregate_type().as_str(), "campaign");
+    assert_eq!(id.aggregate_key(), "c1");
 }
 
 #[test]
@@ -27,8 +27,8 @@ fn key_with_colons_round_trips() {
     assert_eq!(original.to_string(), "campaign:run:01ABC:phase-2");
 
     let parsed: AggregateId = original.to_string().parse().unwrap();
-    assert_eq!(parsed.aggregate_type.as_str(), "campaign");
-    assert_eq!(parsed.aggregate_key, "run:01ABC:phase-2");
+    assert_eq!(parsed.aggregate_type().as_str(), "campaign");
+    assert_eq!(parsed.aggregate_key(), "run:01ABC:phase-2");
     assert_eq!(original, parsed);
 }
 
@@ -36,9 +36,9 @@ fn key_with_colons_round_trips() {
 fn key_as_urn_round_trips() {
     let original = AggregateId::new("character", "urn:uuid:550e8400-e29b-41d4-a716-446655440000");
     let parsed: AggregateId = original.to_string().parse().unwrap();
-    assert_eq!(parsed.aggregate_type.as_str(), "character");
+    assert_eq!(parsed.aggregate_type().as_str(), "character");
     assert_eq!(
-        parsed.aggregate_key,
+        parsed.aggregate_key(),
         "urn:uuid:550e8400-e29b-41d4-a716-446655440000"
     );
     assert_eq!(original, parsed);
@@ -47,15 +47,15 @@ fn key_as_urn_round_trips() {
 #[test]
 fn try_from_str() {
     let id = AggregateId::try_from("counter:my-counter").unwrap();
-    assert_eq!(id.aggregate_type.as_str(), "counter");
-    assert_eq!(id.aggregate_key, "my-counter");
+    assert_eq!(id.aggregate_type().as_str(), "counter");
+    assert_eq!(id.aggregate_key(), "my-counter");
 }
 
 #[test]
 fn try_from_string() {
     let id = AggregateId::try_from(String::from("counter:my-counter")).unwrap();
-    assert_eq!(id.aggregate_type.as_str(), "counter");
-    assert_eq!(id.aggregate_key, "my-counter");
+    assert_eq!(id.aggregate_type().as_str(), "counter");
+    assert_eq!(id.aggregate_key(), "my-counter");
 }
 
 #[test]

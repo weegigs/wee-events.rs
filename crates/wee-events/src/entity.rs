@@ -17,7 +17,7 @@ impl<S> Entity<S> {
 
     /// Returns the aggregate type from the aggregate id.
     pub fn aggregate_type(&self) -> &AggregateType {
-        &self.aggregate_id.aggregate_type
+        self.aggregate_id.aggregate_type()
     }
 
     /// Maps the state to a different type.

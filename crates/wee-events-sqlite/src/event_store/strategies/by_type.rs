@@ -21,7 +21,7 @@ impl PartitionStrategy for TypeStrategy {
         &self,
         aggregate_id: &AggregateId,
     ) -> Result<Self::Partition, Error> {
-        let aggregate_type = aggregate_id.aggregate_type.clone();
+        let aggregate_type = aggregate_id.aggregate_type().clone();
         Ok(TypePartition::new(
             aggregate_type.as_str().to_string(),
             aggregate_type,

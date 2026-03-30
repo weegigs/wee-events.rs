@@ -85,11 +85,11 @@ fn hash_aggregate_id(aggregate_id: &AggregateId) -> u32 {
     let mut hash = 0x811c9dc5_u32;
 
     for byte in aggregate_id
-        .aggregate_type
+        .aggregate_type()
         .as_str()
         .bytes()
         .chain([b':'])
-        .chain(aggregate_id.aggregate_key.bytes())
+        .chain(aggregate_id.aggregate_key().bytes())
     {
         hash ^= u32::from(byte);
         hash = hash.wrapping_mul(0x0100_0193);

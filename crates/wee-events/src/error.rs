@@ -17,7 +17,8 @@ pub enum Error {
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
-    /// Store implementation errors (mutex poison, backend-specific failures).
-    #[error("{0}")]
-    Store(String),
+    /// Store implementation errors (backend-specific failures).
+    /// Wraps the original error to preserve the error chain for debugging.
+    #[error(transparent)]
+    Store(Box<dyn std::error::Error + Send + Sync>),
 }

@@ -13,7 +13,7 @@ fn make_event() -> RawEvent {
 #[test]
 fn enumerate_empty_store() {
     let store = MemoryStore::new();
-    let ids = store.enumerate_aggregates().unwrap();
+    let ids = store.enumerate_aggregates();
     assert!(ids.is_empty());
 }
 
@@ -29,7 +29,7 @@ async fn enumerate_returns_all_aggregates() {
             .unwrap();
     }
 
-    let mut result = store.enumerate_aggregates().unwrap();
+    let mut result = store.enumerate_aggregates();
     result.sort_by_key(|a| a.to_string());
     assert_eq!(result.len(), 3);
     assert_eq!(result[0], AggregateId::new("campaign", "c1"));
@@ -50,14 +50,14 @@ async fn enumerate_by_type_filters() {
     }
 
     let campaign_type = AggregateType::new("campaign");
-    let result = store.enumerate_aggregates_by_type(&campaign_type).unwrap();
+    let result = store.enumerate_aggregates_by_type(&campaign_type);
     assert_eq!(result.len(), 2);
 
     let character_type = AggregateType::new("character");
-    let result = store.enumerate_aggregates_by_type(&character_type).unwrap();
+    let result = store.enumerate_aggregates_by_type(&character_type);
     assert_eq!(result.len(), 1);
 
     let unknown_type = AggregateType::new("unknown");
-    let result = store.enumerate_aggregates_by_type(&unknown_type).unwrap();
+    let result = store.enumerate_aggregates_by_type(&unknown_type);
     assert!(result.is_empty());
 }

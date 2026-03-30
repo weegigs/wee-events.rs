@@ -91,7 +91,7 @@ mod tests {
 
     fn partition_by_user(aggregate_id: &AggregateId) -> String {
         aggregate_id
-            .aggregate_key
+            .aggregate_key()
             .split(':')
             .next()
             .expect("split always yields at least one segment")

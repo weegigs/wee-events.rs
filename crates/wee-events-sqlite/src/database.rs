@@ -159,20 +159,19 @@ async fn migrate_schema(
         }
     }
 
-    let version = target_version.to_string();
-    conn.execute_batch(&format!(
-        "BEGIN;
-         CREATE TABLE IF NOT EXISTS _wee_events_schema_versions (
-             schema_name TEXT PRIMARY KEY,
-             version     INTEGER NOT NULL
-         );
-         {ddl}
-         INSERT INTO _wee_events_schema_versions (schema_name, version)
-         VALUES ('{version_key}', {version})
-         ON CONFLICT(schema_name) DO UPDATE SET version = excluded.version;
-         COMMIT;"
-    ))
+    // DDL must use execute_batch (multiple statements, no parameters).
+    // The version upsert uses a parameterized query to avoid interpolation.
+    conn.execute_batch(&format!("BEGIN;{ddl}")).await?;
+
+    conn.execute(
+        "INSERT INTO _wee_events_schema_versions (schema_name, version)
+         VALUES (?1, ?2)
+         ON CONFLICT(schema_name) DO UPDATE SET version = excluded.version",
+        (version_key, target_version),
+    )
     .await?;
+
+    conn.execute_batch("COMMIT;").await?;
 
     Ok(())
 }

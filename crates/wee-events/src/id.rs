@@ -110,26 +110,59 @@ impl From<&str> for Revision {
 
 /// Composite identifier for an aggregate: type + key.
 ///
-/// Serializes to `"type:key"` format via `Display` and parses back via
-/// `FromStr`. The split point is the **first colon**: everything before it
-/// is the aggregate type (a simple kebab-case token, no colons), everything
-/// after it is the key (which may contain additional colons for compound
+/// Follows the `std::net::SocketAddrV4` pattern: [`new`](Self::new) assembles
+/// from already-typed parts without re-validation, while [`FromStr`] /
+/// [`TryFrom<&str>`] validate untrusted string input. Fields are private;
+/// access via [`aggregate_type`](Self::aggregate_type) and
+/// [`aggregate_key`](Self::aggregate_key).
+///
+/// # Wire format
+///
+/// Serializes to `"type:key"` via `Display` and parses back via `FromStr`.
+/// The split point is the **first colon**: everything before it is the
+/// aggregate type (a simple kebab-case token, no colons), everything after
+/// it is the key (which may contain additional colons for compound
 /// identifiers like `"run:01ABC"` or URN-style values).
 ///
 /// This format is safe for use in URLs, path segments, and query parameters.
 /// The `Display` → `FromStr` round-trip is guaranteed.
+///
+/// # Construction
+///
+/// | Method | Input | Validates | Fails |
+/// |--------|-------|-----------|-------|
+/// | [`new`](Self::new) | typed parts | no | never |
+/// | [`FromStr`] | `"type:key"` string | yes | `AggregateIdParseError` |
+/// | [`TryFrom<&str>`] | `"type:key"` string | yes | `AggregateIdParseError` |
+///
+/// `new()` trusts its inputs — passing an empty `AggregateType` or empty key
+/// produces a value that serializes to `":key"` or `"type:"`, which will
+/// fail to round-trip through `FromStr`. This mirrors how
+/// `SocketAddrV4::new(Ipv4Addr, u16)` trusts its typed arguments.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct AggregateId {
-    pub aggregate_type: AggregateType,
-    pub aggregate_key: String,
+    aggregate_type: AggregateType,
+    aggregate_key: String,
 }
 
 impl AggregateId {
+    /// Creates an `AggregateId` from typed parts.
+    ///
+    /// No validation is performed — the caller provides already-typed values.
+    /// Use [`FromStr`] or [`TryFrom<&str>`] for untrusted string input.
     pub fn new(aggregate_type: impl Into<AggregateType>, aggregate_key: impl Into<String>) -> Self {
         Self {
             aggregate_type: aggregate_type.into(),
             aggregate_key: aggregate_key.into(),
         }
+    }
+
+    pub fn aggregate_type(&self) -> &AggregateType {
+        &self.aggregate_type
+    }
+
+    pub fn aggregate_key(&self) -> &str {
+        &self.aggregate_key
     }
 }
 

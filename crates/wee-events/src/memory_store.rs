@@ -29,10 +29,10 @@ impl MemoryStore {
     fn generate_ulid(&self) -> Result<String, Error> {
         self.generator
             .lock()
-            .map_err(|e| Error::Store(e.to_string()))?
+            .expect("ULID generator mutex poisoned")
             .generate()
             .map(|u| u.to_string())
-            .map_err(|e| Error::Store(e.to_string()))
+            .map_err(|e| Error::Store(Box::new(e)))
     }
 }
 
@@ -44,37 +44,25 @@ impl Default for MemoryStore {
 
 impl MemoryStore {
     /// Returns all distinct aggregate IDs in the store.
-    pub fn enumerate_aggregates(&self) -> Result<Vec<AggregateId>, Error> {
-        let streams = self
-            .streams
-            .lock()
-            .map_err(|e| Error::Store(e.to_string()))?;
-        Ok(streams.keys().cloned().collect())
+    pub fn enumerate_aggregates(&self) -> Vec<AggregateId> {
+        let streams = self.streams.lock().expect("streams mutex poisoned");
+        streams.keys().cloned().collect()
     }
 
     /// Returns all distinct aggregate IDs of a given type.
-    pub fn enumerate_aggregates_by_type(
-        &self,
-        aggregate_type: &AggregateType,
-    ) -> Result<Vec<AggregateId>, Error> {
-        let streams = self
-            .streams
-            .lock()
-            .map_err(|e| Error::Store(e.to_string()))?;
-        Ok(streams
+    pub fn enumerate_aggregates_by_type(&self, aggregate_type: &AggregateType) -> Vec<AggregateId> {
+        let streams = self.streams.lock().expect("streams mutex poisoned");
+        streams
             .keys()
-            .filter(|id| id.aggregate_type == *aggregate_type)
+            .filter(|id| *id.aggregate_type() == *aggregate_type)
             .cloned()
-            .collect())
+            .collect()
     }
 }
 
 impl EventStore for MemoryStore {
     async fn load(&self, id: &AggregateId) -> Result<Aggregate, Error> {
-        let streams = self
-            .streams
-            .lock()
-            .map_err(|e| Error::Store(e.to_string()))?;
+        let streams = self.streams.lock().expect("streams mutex poisoned");
 
         match streams.get(id) {
             Some(events) if !events.is_empty() => {
@@ -90,10 +78,7 @@ impl EventStore for MemoryStore {
         options: PublishOptions,
         events: Vec<RawEvent>,
     ) -> Result<ChangeSet, Error> {
-        let mut streams = self
-            .streams
-            .lock()
-            .map_err(|e| Error::Store(e.to_string()))?;
+        let mut streams = self.streams.lock().expect("streams mutex poisoned");
 
         if events.is_empty() {
             let revision = streams

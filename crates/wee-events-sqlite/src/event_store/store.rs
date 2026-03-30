@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::marker::PhantomData;
 use std::path::Path;
 use std::path::PathBuf;
@@ -29,6 +29,14 @@ use super::types::{
 type SharedConnection = Arc<AsyncMutex<Connection>>;
 
 /// SQLite-compatible event store backed by libSQL.
+///
+/// # Connection lifecycle
+///
+/// Connections are opened lazily per partition and cached for the lifetime of
+/// the store. For strategies that produce many partitions (e.g.,
+/// [`AggregateStrategy`] — one per aggregate), the connection map grows
+/// monotonically. Long-running processes with many distinct aggregates should
+/// consider a bounded strategy like [`HashedStrategy`] or [`TypeStrategy`].
 pub struct EventStore<S = GlobalStrategy, C = LocalPartitionCatalog<GlobalStrategy>>
 where
     S: PartitionStrategy,
@@ -37,7 +45,7 @@ where
     strategy: S,
     catalog: C,
     connections: AsyncMutex<HashMap<S::Partition, SharedConnection>>,
-    known_partitions: AsyncMutex<Vec<S::Partition>>,
+    known_partitions: AsyncMutex<BTreeSet<S::Partition>>,
     generator: Mutex<Generator>,
 }
 
@@ -88,7 +96,7 @@ where
             strategy,
             catalog,
             connections: AsyncMutex::new(HashMap::new()),
-            known_partitions: AsyncMutex::new(Vec::new()),
+            known_partitions: AsyncMutex::new(BTreeSet::new()),
             generator: Mutex::new(Generator::new()),
         }
     }
@@ -202,25 +210,17 @@ where
 
     async fn remember_partition(&self, partition: &S::Partition) {
         let mut known = self.known_partitions.lock().await;
-        if !known.contains(partition) {
-            known.push(partition.clone());
-        }
+        known.insert(partition.clone());
     }
 
     async fn all_known_partitions(&self) -> Result<Vec<S::Partition>, Error> {
-        let mut partitions = self.catalog.partitions().await?;
+        let mut partitions: BTreeSet<S::Partition> =
+            self.catalog.partitions().await?.into_iter().collect();
         {
             let known = self.known_partitions.lock().await;
-            for partition in known.iter() {
-                if !partitions.contains(partition) {
-                    partitions.push(partition.clone());
-                }
-            }
+            partitions.extend(known.iter().cloned());
         }
-
-        partitions.sort();
-        partitions.dedup();
-        Ok(partitions)
+        Ok(partitions.into_iter().collect())
     }
 
     async fn open_target(
@@ -232,10 +232,10 @@ where
 
     fn sorted_unique_ids(mut ids: Vec<AggregateId>) -> Vec<AggregateId> {
         ids.sort_by(|left, right| {
-            left.aggregate_type
+            left.aggregate_type()
                 .as_str()
-                .cmp(right.aggregate_type.as_str())
-                .then_with(|| left.aggregate_key.cmp(&right.aggregate_key))
+                .cmp(right.aggregate_type().as_str())
+                .then_with(|| left.aggregate_key().cmp(right.aggregate_key()))
         });
         ids.dedup();
         ids
@@ -295,7 +295,7 @@ where
                  FROM events
                  WHERE aggregate_type = ?1 AND aggregate_key = ?2
                  ORDER BY revision",
-                (id.aggregate_type.as_str(), id.aggregate_key.as_str()),
+                (id.aggregate_type().as_str(), id.aggregate_key()),
             )
             .await?;
 
@@ -343,8 +343,8 @@ where
                 "SELECT MAX(revision) FROM events
                  WHERE aggregate_type = ?1 AND aggregate_key = ?2",
                 (
-                    aggregate_id.aggregate_type.as_str(),
-                    aggregate_id.aggregate_key.as_str(),
+                    aggregate_id.aggregate_type().as_str(),
+                    aggregate_id.aggregate_key(),
                 ),
             )
             .await?;
@@ -778,35 +778,28 @@ where
     }
 }
 
-const ADVANCE_SQL: &str =
+/// Shared INSERT prefix for all publish variants. The WHERE clause varies
+/// by concurrency mode; only the suffix changes.
+const INSERT_PREFIX: &str =
     "INSERT INTO events (event_id, aggregate_type, aggregate_key, event_type, revision,
                          causation_id, correlation_id, encoding, data)
-     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
-     WHERE ?5 > COALESCE(
+     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9";
+
+/// WHERE clause for the common case: new revision must exceed current max.
+const ADVANCE_WHERE: &str = " WHERE ?5 > COALESCE(
          (SELECT MAX(revision) FROM events
           WHERE aggregate_type = ?2 AND aggregate_key = ?3),
          '00000000000000000000000000'
      )";
 
-const INITIAL_SQL: &str =
-    "INSERT INTO events (event_id, aggregate_type, aggregate_key, event_type, revision,
-                         causation_id, correlation_id, encoding, data)
-     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
-     WHERE NOT EXISTS (
+/// WHERE clause for initial publish: aggregate must have no events.
+const INITIAL_WHERE: &str = " WHERE NOT EXISTS (
          SELECT 1 FROM events
          WHERE aggregate_type = ?2 AND aggregate_key = ?3
      )";
 
-const EXACT_SQL: &str =
-    "INSERT INTO events (event_id, aggregate_type, aggregate_key, event_type, revision,
-                         causation_id, correlation_id, encoding, data)
-     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
-     WHERE ?5 > COALESCE(
-         (SELECT MAX(revision) FROM events
-          WHERE aggregate_type = ?2 AND aggregate_key = ?3),
-         '00000000000000000000000000'
-     )
-     AND (SELECT MAX(revision) FROM events
+/// Extra AND clause for exact revision match (appended after ADVANCE_WHERE).
+const EXACT_SUFFIX: &str = " AND (SELECT MAX(revision) FROM events
           WHERE aggregate_type = ?2 AND aggregate_key = ?3) = ?10";
 
 struct PublishRow<'a> {
@@ -819,62 +812,77 @@ struct PublishRow<'a> {
     revision: &'a str,
 }
 
+/// Determines the correct concurrency mode and executes the publish INSERT.
+///
+/// Three modes, all sharing `INSERT_PREFIX`:
+/// - **initial**: first event for this aggregate (`expected_revision` is zero)
+/// - **exact**: caller expects a specific prior revision (`expected_revision` is non-zero)
+/// - **advance**: no expected revision — just ensure monotonic ordering
 async fn execute_publish_statement(
     tx: &libsql::Transaction,
     row: PublishRow<'_>,
 ) -> Result<u64, Error> {
+    let causation = row.metadata.causation_id.as_ref().map(|id| id.as_str());
+    let correlation = row.metadata.correlation_id.as_ref().map(|id| id.as_str());
+
     match (row.index, &row.options.expected_revision) {
-        (0, Some(expected)) if expected.is_zero() => tx
-            .execute(
-                INITIAL_SQL,
+        (0, Some(expected)) if expected.is_zero() => {
+            let sql = format!("{INSERT_PREFIX}{INITIAL_WHERE}");
+            tx.execute(
+                &sql,
                 libsql::params![
                     row.event_id.as_str(),
-                    row.aggregate_id.aggregate_type.as_str(),
-                    row.aggregate_id.aggregate_key.as_str(),
+                    row.aggregate_id.aggregate_type().as_str(),
+                    row.aggregate_id.aggregate_key(),
                     row.raw.event_type.as_str(),
                     row.revision,
-                    row.metadata.causation_id.as_ref().map(|id| id.as_str()),
-                    row.metadata.correlation_id.as_ref().map(|id| id.as_str()),
+                    causation,
+                    correlation,
                     row.raw.data.encoding.as_str(),
                     row.raw.data.data.clone(),
                 ],
             )
             .await
-            .map_err(Into::into),
-        (0, Some(expected)) => tx
-            .execute(
-                EXACT_SQL,
+            .map_err(Into::into)
+        }
+        (0, Some(expected)) => {
+            let sql = format!("{INSERT_PREFIX}{ADVANCE_WHERE}{EXACT_SUFFIX}");
+            tx.execute(
+                &sql,
                 libsql::params![
                     row.event_id.as_str(),
-                    row.aggregate_id.aggregate_type.as_str(),
-                    row.aggregate_id.aggregate_key.as_str(),
+                    row.aggregate_id.aggregate_type().as_str(),
+                    row.aggregate_id.aggregate_key(),
                     row.raw.event_type.as_str(),
                     row.revision,
-                    row.metadata.causation_id.as_ref().map(|id| id.as_str()),
-                    row.metadata.correlation_id.as_ref().map(|id| id.as_str()),
+                    causation,
+                    correlation,
                     row.raw.data.encoding.as_str(),
                     row.raw.data.data.clone(),
                     expected.as_str(),
                 ],
             )
             .await
-            .map_err(Into::into),
-        _ => tx
-            .execute(
-                ADVANCE_SQL,
+            .map_err(Into::into)
+        }
+        _ => {
+            let sql = format!("{INSERT_PREFIX}{ADVANCE_WHERE}");
+            tx.execute(
+                &sql,
                 libsql::params![
                     row.event_id.as_str(),
-                    row.aggregate_id.aggregate_type.as_str(),
-                    row.aggregate_id.aggregate_key.as_str(),
+                    row.aggregate_id.aggregate_type().as_str(),
+                    row.aggregate_id.aggregate_key(),
                     row.raw.event_type.as_str(),
                     row.revision,
-                    row.metadata.causation_id.as_ref().map(|id| id.as_str()),
-                    row.metadata.correlation_id.as_ref().map(|id| id.as_str()),
+                    causation,
+                    correlation,
                     row.raw.data.encoding.as_str(),
                     row.raw.data.data.clone(),
                 ],
             )
             .await
-            .map_err(Into::into),
+            .map_err(Into::into)
+        }
     }
 }

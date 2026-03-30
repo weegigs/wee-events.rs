@@ -36,7 +36,7 @@ impl PartitionStrategy for AggregateStrategy {
         partition: &Self::Partition,
         aggregate_type: &AggregateType,
     ) -> PartitionRead {
-        if &partition.key().aggregate_type == aggregate_type {
+        if partition.key().aggregate_type() == aggregate_type {
             PartitionRead::Direct(partition.key().clone())
         } else {
             PartitionRead::Skip
