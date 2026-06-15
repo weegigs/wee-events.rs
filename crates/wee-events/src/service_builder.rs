@@ -1,11 +1,12 @@
-#![allow(private_bounds, private_interfaces)]
-
 //! Portable async-factory runtime for building typed services.
 //!
 //! Provides a `ServiceBuilder<S>` that accumulates a loader function and typed
 //! handler functions. The `.build(factory)` method produces a `BuiltService`
-//! that has `load` and `execute` methods. All dispatch is fully static —
-//! no type erasure, no `Box<dyn Any>`, no `TypeId`.
+//! that has `load` and `execute` methods. Dispatch is static (no `Box<dyn Any>`,
+//! no `TypeId`) — `HandleCommand<C, Idx, ...>` resolves at compile time to a
+//! concrete impl. The futures the resolved handlers return *are* `BoxFuture`,
+//! which is a runtime allocation per handler call; see the `HandlerBridge`
+//! header below for why.
 //!
 //! ## Error model
 //!
@@ -16,10 +17,11 @@
 //!
 //! Splitting them lets a service have a loader that fails with one error type
 //! (commonly the store's error or a [`crate::ServiceError`] over it) and
-//! handlers that fail with a richer service error. `EH: From<EL>` so loader
-//! failures during `execute` flow into the handler error naturally; both must
-//! be `From<crate::Error>` so factory failures (which produce `crate::Error`)
-//! convert into either side.
+//! handlers that fail with a richer service error. The error path is one-way:
+//! `crate::Error` enters via `EL: From<crate::Error>` (factory + loader
+//! failures), then `EH: From<EL>` lifts those into the handler-error world.
+//! There is no direct `EH: From<crate::Error>` bound — that would create a
+//! second path with potentially different semantics from the EL-mediated one.
 //!
 //! Defaults are `EL = crate::Error` and `EH = EL`, preserving the historical
 //! single-`crate::Error` contract for callers that haven't migrated.
@@ -45,12 +47,19 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 
+use crate::Command;
 use crate::entity::Entity;
 use crate::id::AggregateId;
-use crate::Command;
 
 // ---------------------------------------------------------------------------
-// Erased future type alias — BoxFuture for lifetime management only, not type erasure
+// Erased future type alias.
+//
+// `Pin<Box<dyn Future + Send + 'a>>` — this *is* type erasure of the future,
+// plus a heap allocation per call. The dispatch (which `Fn` runs, which
+// `HandleCommand` impl) stays static; only the future the resolved `Fn`
+// returns is erased and boxed. The reason for the box: Rust can't express
+// `F: for<'a> Fn(&'a Ctx, ...) -> impl Future<Output = ...> + 'a` directly,
+// so the bridge impls below box the future to carry the borrow lifetime.
 // ---------------------------------------------------------------------------
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -149,14 +158,18 @@ where
 /// remain pinned to `crate::Result<Ctx>` — context construction is an
 /// infrastructure concern.
 ///
-/// **Failure surface:** factory failures are converted into the loader's
-/// `EL` (and the handler's `EH`) via the `From<crate::Error>` bound on each.
-/// When `EL = ServiceError<E>`, that route lands in `ServiceError::Store(E::from(crate::Error))`,
-/// so a context-construction failure is indistinguishable from a store-load
-/// failure to the caller. This is intentional — the loader contract treats
-/// "couldn't get a context" and "couldn't load the aggregate" as equally
-/// fatal infrastructure conditions — but worth knowing if you're triaging
-/// errors at the service boundary.
+/// **Failure surface:** factory failures convert into `EL` via
+/// `EL: From<crate::Error>`; `execute` then lifts that `EL` into `EH` via
+/// `EH: From<EL>`. There is no direct `crate::Error → EH` route — every
+/// factory or loader failure travels the same `crate::Error → EL → EH`
+/// path, so behaviour is independent of which `From` impl callers chose to
+/// write. When `EL = ServiceError<E>`, that route lands in
+/// `ServiceError::Store(E::from(crate::Error))`, so a context-construction
+/// failure is indistinguishable from a store-load failure to the caller.
+/// This is intentional — the loader contract treats "couldn't get a context"
+/// and "couldn't load the aggregate" as equally fatal infrastructure
+/// conditions — but worth knowing if you're triaging errors at the service
+/// boundary.
 #[doc(hidden)]
 pub trait FactoryBridge<'a, Ctx>: Sized {
     fn call(f: Self) -> BoxFuture<'a, crate::Result<Ctx>>;
@@ -297,49 +310,37 @@ where
     F: Send + Sync + 'static,
     Handlers: Send + Sync + 'static,
     EL: From<crate::Error> + Send + Sync + 'static,
-    EH: From<crate::Error> + From<EL> + Send + Sync + 'static,
+    EH: From<EL> + Send + Sync + 'static,
     for<'a> &'a L: LoaderBridge<'a, Ctx, S, EL>,
     for<'a> &'a F: FactoryBridge<'a, Ctx>,
 {
     /// Load the current entity state. Calls the factory then the loader.
-    pub fn load(
-        &self,
-        id: &AggregateId,
-    ) -> impl Future<Output = Result<Entity<S>, EL>> + Send + '_ {
-        let id = id.clone();
-        async move {
-            let ctx = <&F as FactoryBridge<'_, Ctx>>::call(&self.factory)
-                .await
-                .map_err(EL::from)?;
-            <&L as LoaderBridge<'_, Ctx, S, EL>>::call(&self.loader, &ctx, &id).await
-        }
+    pub async fn load(&self, id: AggregateId) -> Result<Entity<S>, EL> {
+        let ctx = <&F as FactoryBridge<'_, Ctx>>::call(&self.factory)
+            .await
+            .map_err(EL::from)?;
+        <&L as LoaderBridge<'_, Ctx, S, EL>>::call(&self.loader, &ctx, &id).await
     }
 
-    /// Execute a typed command via direct HList dispatch.
-    pub fn execute<C, Idx>(
-        &self,
-        id: &AggregateId,
-        cmd: C,
-    ) -> impl Future<Output = Result<Entity<S>, EH>> + Send + '_
+    /// Execute a typed command via direct `HList` dispatch.
+    pub async fn execute<C, Idx>(&self, id: AggregateId, cmd: C) -> Result<Entity<S>, EH>
     where
         C: Command + Send + 'static,
         Handlers: HandleCommand<C, Idx, Ctx, S, EH>,
     {
-        let id = id.clone();
-        async move {
-            let ctx = <&F as FactoryBridge<'_, Ctx>>::call(&self.factory)
-                .await
-                .map_err(EH::from)?;
-            let entity = <&L as LoaderBridge<'_, Ctx, S, EL>>::call(&self.loader, &ctx, &id)
-                .await
-                .map_err(EH::from)?;
-            match self.handlers.handle(&ctx, &entity, cmd).await? {
-                HandlerOutcome::Entity(entity) => Ok(entity),
-                HandlerOutcome::Reload => {
-                    <&L as LoaderBridge<'_, Ctx, S, EL>>::call(&self.loader, &ctx, &id)
-                        .await
-                        .map_err(EH::from)
-                }
+        let ctx = <&F as FactoryBridge<'_, Ctx>>::call(&self.factory)
+            .await
+            .map_err(EL::from)
+            .map_err(EH::from)?;
+        let entity = <&L as LoaderBridge<'_, Ctx, S, EL>>::call(&self.loader, &ctx, &id)
+            .await
+            .map_err(EH::from)?;
+        match self.handlers.handle(&ctx, &entity, cmd).await? {
+            HandlerOutcome::Entity(entity) => Ok(entity),
+            HandlerOutcome::Reload => {
+                <&L as LoaderBridge<'_, Ctx, S, EL>>::call(&self.loader, &ctx, &id)
+                    .await
+                    .map_err(EH::from)
             }
         }
     }
@@ -383,6 +384,7 @@ impl<S, EL, EH> ServiceBuilder<S, (), EmptyHandlers, EL, EH> {
     /// Create a new builder with no loader and no handlers registered.
     ///
     /// `EL` / `EH` are left free for inference from registered functions.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             loader: (),
@@ -456,13 +458,6 @@ impl<S, L, Handlers, EL, EH> ServiceBuilder<S, L, Handlers, EL, EH> {
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut: Future<Output = crate::Result<Ctx>> + Send + 'static,
     {
-        self.build_raw(factory)
-    }
-
-    /// Adapter escape hatch: produce a `BuiltService` without enforcing a
-    /// factory shape. The caller's adapter must provide the bridge impl.
-    #[doc(hidden)]
-    pub fn build_raw<Ctx, F>(self, factory: F) -> BuiltService<Ctx, S, L, F, Handlers, EL, EH> {
         BuiltService {
             factory,
             loader: self.loader,

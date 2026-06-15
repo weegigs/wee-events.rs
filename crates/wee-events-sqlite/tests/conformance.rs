@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 
 use reqwest::StatusCode;
 use testcontainers::{
+    ContainerAsync, GenericImage, ImageExt,
     core::{IntoContainerPort, WaitFor},
     runners::AsyncRunner,
-    ContainerAsync, GenericImage, ImageExt,
 };
 use tokio::sync::OnceCell;
 use tokio::time::sleep;
@@ -320,13 +320,7 @@ where
 {
     TempStore {
         _guard: TestStoreGuard::None,
-        store: SqliteEventStore::builder()
-            .in_memory()
-            .strategy(strategy)
-            .writer(wee_events::JsonEncoder)
-            .open()
-            .await
-            .unwrap(),
+        store: SqliteEventStore::open_in_memory(strategy).await.unwrap(),
     }
 }
 
@@ -335,11 +329,7 @@ where
     S: LocalPartitionStrategy + LocalStorePath,
 {
     let temp_dir = Arc::new(tempfile::tempdir().unwrap());
-    let store = SqliteEventStore::builder()
-        .local(S::local_store_path(temp_dir.as_ref()))
-        .strategy(strategy)
-        .writer(wee_events::JsonEncoder)
-        .open()
+    let store = SqliteEventStore::open_local(S::local_store_path(temp_dir.as_ref()), strategy)
         .await
         .unwrap();
 
@@ -359,20 +349,10 @@ where
 {
     let temp_dir = Arc::new(tempfile::tempdir().unwrap());
     let path = S::local_store_path(temp_dir.as_ref());
-    let store_a = SqliteEventStore::builder()
-        .local(&path)
-        .strategy(strategy.clone())
-        .writer(wee_events::JsonEncoder)
-        .open()
+    let store_a = SqliteEventStore::open_local(&path, strategy.clone())
         .await
         .unwrap();
-    let store_b = SqliteEventStore::builder()
-        .local(&path)
-        .strategy(strategy)
-        .writer(wee_events::JsonEncoder)
-        .open()
-        .await
-        .unwrap();
+    let store_b = SqliteEventStore::open_local(&path, strategy).await.unwrap();
 
     (
         TempStore {
@@ -503,13 +483,10 @@ where
     let url = std::env::var("TURSO_DATABASE_URL").unwrap();
     let auth_token = std::env::var("TURSO_AUTH_TOKEN").unwrap();
 
-    let store = SqliteEventStore::builder()
-        .turso(FixedRemoteTargetProvisioner { url, auth_token })
-        .strategy(strategy)
-        .writer(wee_events::JsonEncoder)
-        .open()
-        .await
-        .unwrap();
+    let store =
+        SqliteEventStore::open_turso(FixedRemoteTargetProvisioner { url, auth_token }, strategy)
+            .await
+            .unwrap();
 
     TempStore {
         _guard: TestStoreGuard::None,
@@ -530,18 +507,10 @@ where
     let auth_token = std::env::var("TURSO_AUTH_TOKEN").unwrap();
     let provisioner = FixedRemoteTargetProvisioner { url, auth_token };
 
-    let store_a = SqliteEventStore::builder()
-        .turso(provisioner.clone())
-        .strategy(strategy.clone())
-        .writer(wee_events::JsonEncoder)
-        .open()
+    let store_a = SqliteEventStore::open_turso(provisioner.clone(), strategy.clone())
         .await
         .unwrap();
-    let store_b = SqliteEventStore::builder()
-        .turso(provisioner)
-        .strategy(strategy)
-        .writer(wee_events::JsonEncoder)
-        .open()
+    let store_b = SqliteEventStore::open_turso(provisioner, strategy)
         .await
         .unwrap();
 
@@ -564,18 +533,13 @@ async fn open_sqld_default_store_with_retry(
     let deadline = Instant::now() + Duration::from_secs(20);
 
     loop {
-        match SqliteEventStore::builder()
-            .sqld_default(provisioner.clone())
-            .strategy(strategy)
-            .writer(wee_events::JsonEncoder)
-            .open()
-            .await
-        {
+        match SqliteEventStore::open_sqld_default(provisioner.clone(), strategy).await {
             Ok(store) => return store,
             Err(error) => {
-                if Instant::now() >= deadline {
-                    panic!("sqld default did not become ready in time: {error}");
-                }
+                assert!(
+                    Instant::now() < deadline,
+                    "sqld default did not become ready in time: {error}"
+                );
                 sleep(Duration::from_millis(250)).await;
             }
         }
@@ -592,18 +556,13 @@ where
     let deadline = Instant::now() + Duration::from_secs(20);
 
     loop {
-        match SqliteEventStore::builder()
-            .sqld_namespaced(provisioner.clone())
-            .strategy(strategy.clone())
-            .writer(wee_events::JsonEncoder)
-            .open()
-            .await
-        {
+        match SqliteEventStore::open_sqld_namespaced(provisioner.clone(), strategy.clone()).await {
             Ok(store) => return store,
             Err(error) => {
-                if Instant::now() >= deadline {
-                    panic!("sqld did not become ready in time: {error}");
-                }
+                assert!(
+                    Instant::now() < deadline,
+                    "sqld did not become ready in time: {error}"
+                );
                 sleep(Duration::from_millis(250)).await;
             }
         }
@@ -622,9 +581,10 @@ where
         match store.load(&probe).await {
             Ok(_) => return,
             Err(error) => {
-                if Instant::now() >= deadline {
-                    panic!("remote sqld did not become ready in time: {error}");
-                }
+                assert!(
+                    Instant::now() < deadline,
+                    "remote sqld did not become ready in time: {error}"
+                );
                 sleep(Duration::from_millis(250)).await;
             }
         }
@@ -693,9 +653,7 @@ impl<T> EventStoreTrait for TempStore<T>
 where
     T: EventStoreTrait,
 {
-    type Error = T::Error;
-
-    async fn load(&self, id: &AggregateId) -> Result<Aggregate, Self::Error> {
+    async fn load(&self, id: &AggregateId) -> Result<Aggregate, wee_events::Error> {
         self.store.load(id).await
     }
 
@@ -704,7 +662,7 @@ where
         aggregate_id: &AggregateId,
         options: PublishOptions,
         events: Vec<RawEvent>,
-    ) -> Result<ChangeSet, Self::Error> {
+    ) -> Result<ChangeSet, wee_events::Error> {
         self.store.publish(aggregate_id, options, events).await
     }
 }
@@ -883,7 +841,7 @@ impl NamedTargetProvisioner for TestSqldNamespaceProvisioner {
         self.created_namespaces
             .lock()
             .unwrap()
-            .insert(namespace.to_string());
+            .insert(namespace.clone());
         if let PartitionName::Named(name) = name {
             self.known_names.lock().unwrap().insert(name.to_string());
         }
@@ -1060,13 +1018,12 @@ mod turso_platform_integration {
                     // Clean up leftover databases from previous runs
                     provisioner.cleanup().await.expect("pre-test cleanup");
 
-                    let store = SqliteEventStore::builder()
-                        .turso(TursoPlatformProvisioner::new(config.clone()))
-                        .strategy($strategy)
-                        .writer(wee_events::JsonEncoder)
-                        .open()
-                        .await
-                        .unwrap();
+                    let store = SqliteEventStore::open_turso(
+                        TursoPlatformProvisioner::new(config.clone()),
+                        $strategy,
+                    )
+                    .await
+                    .unwrap();
 
                     // Run all conformance tests sequentially
                     wee_events::testing::load_initial(&store).await;
@@ -1083,20 +1040,18 @@ mod turso_platform_integration {
                     wee_events::testing::empty_publish_returns_current_revision(&store).await;
                     wee_events::testing::event_ordering_preserved(&store).await;
 
-                    let store_a = SqliteEventStore::builder()
-                        .turso(TursoPlatformProvisioner::new(config.clone()))
-                        .strategy($strategy)
-                        .writer(wee_events::JsonEncoder)
-                        .open()
-                        .await
-                        .unwrap();
-                    let store_b = SqliteEventStore::builder()
-                        .turso(TursoPlatformProvisioner::new(config.clone()))
-                        .strategy($strategy)
-                        .writer(wee_events::JsonEncoder)
-                        .open()
-                        .await
-                        .unwrap();
+                    let store_a = SqliteEventStore::open_turso(
+                        TursoPlatformProvisioner::new(config.clone()),
+                        $strategy,
+                    )
+                    .await
+                    .unwrap();
+                    let store_b = SqliteEventStore::open_turso(
+                        TursoPlatformProvisioner::new(config.clone()),
+                        $strategy,
+                    )
+                    .await
+                    .unwrap();
                     wee_events::testing::blind_appends_succeed_across_store_instances(
                         &store_a, &store_b,
                     )

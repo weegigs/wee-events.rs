@@ -1,6 +1,6 @@
 use wee_events::{
-    memory::MemoryStore, AggregateId, AggregateType, EventData, EventStore, EventType,
-    PublishOptions, RawEvent,
+    AggregateId, AggregateType, EventData, EventStore, EventType, PublishOptions, RawEvent,
+    memory::MemoryStore,
 };
 
 fn make_event() -> RawEvent {
@@ -30,7 +30,7 @@ async fn enumerate_returns_all_aggregates() {
     }
 
     let mut result = store.enumerate_aggregates();
-    result.sort_by_key(|a| a.to_string());
+    result.sort_by_key(std::string::ToString::to_string);
     assert_eq!(result.len(), 3);
     assert_eq!(result[0], AggregateId::new("campaign", "c1"));
     assert_eq!(result[1], AggregateId::new("campaign", "c2"));

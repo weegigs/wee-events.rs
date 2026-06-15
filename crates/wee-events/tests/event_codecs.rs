@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 use wee_events::{
-    Aggregate, AggregateId, CborDecoder, CborEncoder, DecodeError, EventData, EventDecoder,
-    EventDecoders, EventEncoder, EventId, EventMetadata, EventPattern, EventType, JsonDecoder,
-    JsonEncoder, RecordedEvent, RenderError, Renderer, Revision,
+    Aggregate, AggregateId, DecodeError, Encoding, EventData, EventDecoder, EventEncoder, EventId,
+    EventMetadata, EventPattern, EventType, RecordedEvent, RenderError, Renderer, Revision,
+    encoding::json,
 };
+
+#[cfg(feature = "cbor")]
+use wee_events::encoding::cbor;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct Payload {
@@ -12,54 +15,52 @@ struct Payload {
 
 #[test]
 fn json_encoder_and_decoder_round_trip_event_data() {
-    let data = JsonEncoder
+    let data = json::Encoder
         .serialize(&Payload { amount: 7 })
         .expect("json encode should succeed");
 
-    assert_eq!(data.encoding, EventData::JSON_ENCODING);
+    assert_eq!(data.encoding, Encoding::Json);
 
-    let decoded: Payload = JsonDecoder
+    let decoded: Payload = json::Decoder
         .deserialize(&data)
         .expect("json decode should succeed");
     assert_eq!(decoded, Payload { amount: 7 });
 }
 
+#[cfg(feature = "cbor")]
 #[test]
 fn cbor_encoder_and_decoder_round_trip_event_data() {
-    let data = CborEncoder
+    let data = cbor::Encoder
         .serialize(&Payload { amount: 9 })
         .expect("cbor encode should succeed");
 
-    assert_eq!(data.encoding, CborEncoder::ENCODING);
-    assert_ne!(data.encoding, EventData::JSON_ENCODING);
+    assert_eq!(data.encoding, Encoding::Cbor);
+    assert_ne!(data.encoding, Encoding::Json);
 
-    let decoded: Payload = CborDecoder
+    let decoded: Payload = cbor::Decoder
         .deserialize(&data)
         .expect("cbor decode should succeed");
     assert_eq!(decoded, Payload { amount: 9 });
 }
 
+#[cfg(feature = "cbor")]
 #[test]
-fn decoder_set_selects_decoder_by_event_data_encoding() {
-    let decoders = EventDecoders::new().with(JsonDecoder).with(CborDecoder);
-    let data = CborEncoder
+fn encoding_dispatch_selects_decoder_by_event_data_encoding() {
+    let data = cbor::Encoder
         .serialize(&Payload { amount: 11 })
         .expect("cbor encode should succeed");
 
-    let decoded: Payload = decoders
-        .deserialize(&data)
-        .expect("decoder set should find cbor decoder");
+    let decoded: Payload = data
+        .encoding
+        .decode(&data)
+        .expect("dispatch should find cbor decoder");
 
     assert_eq!(decoded, Payload { amount: 11 });
 }
 
 #[test]
-fn decoder_set_reports_unknown_encoding() {
-    let decoders = EventDecoders::new().with(JsonDecoder);
-    let data = EventData::raw("application/x-custom", vec![1, 2, 3]);
-
-    let error = decoders
-        .deserialize::<Payload>(&data)
+fn encoding_dispatch_reports_unknown_encoding() {
+    let error = Encoding::from_encoding_str("application/x-custom")
         .expect_err("unknown encoding should fail");
 
     assert!(matches!(
@@ -76,6 +77,7 @@ fn event_data_json_helpers_preserve_existing_behavior() {
     assert_eq!(decoded, Payload { amount: 13 });
 }
 
+#[cfg(feature = "cbor")]
 #[test]
 fn renderer_can_decode_events_from_event_data_encoding() {
     #[derive(Default)]
@@ -88,13 +90,12 @@ fn renderer_can_decode_events_from_event_data_encoding() {
         _event_type: &EventType,
         data: &EventData,
     ) -> Result<(), DecodeError> {
-        let decoders = EventDecoders::new().with(JsonDecoder).with(CborDecoder);
-        let payload: Payload = decoders.deserialize(data)?;
+        let payload: Payload = data.encoding.decode(data)?;
         state.amount += payload.amount;
         Ok(())
     }
 
-    let data = CborEncoder
+    let data = cbor::Encoder
         .serialize(&Payload { amount: 21 })
         .expect("cbor encode should succeed");
     let aggregate = Aggregate::from_events(
@@ -102,7 +103,7 @@ fn renderer_can_decode_events_from_event_data_encoding() {
         vec![RecordedEvent {
             event_id: EventId::new("event-1"),
             event_type: EventType::new("counter:incremented"),
-            revision: Revision::new("event-1"),
+            revision: Revision::generate(),
             metadata: EventMetadata::default(),
             data,
         }],
@@ -110,7 +111,7 @@ fn renderer_can_decode_events_from_event_data_encoding() {
     let renderer = Renderer::new().with("counter:incremented", reduce);
 
     let entity = renderer
-        .render(&aggregate)
+        .render(aggregate)
         .expect("renderer should decode by encoding");
 
     assert_eq!(entity.state.amount, 21);
@@ -126,7 +127,7 @@ fn renderer_errors_on_unhandled_event_type() {
         vec![RecordedEvent {
             event_id: EventId::new("event-1"),
             event_type: EventType::new("counter:unknown"),
-            revision: Revision::new("event-1"),
+            revision: Revision::generate(),
             metadata: EventMetadata::default(),
             data: EventData::json(&serde_json::json!({})).expect("json encode should succeed"),
         }],
@@ -134,7 +135,7 @@ fn renderer_errors_on_unhandled_event_type() {
     let renderer = Renderer::<State>::new();
 
     let error = renderer
-        .render(&aggregate)
+        .render(aggregate)
         .expect_err("unhandled event types should fail entity rendering");
 
     assert!(matches!(
@@ -153,7 +154,7 @@ fn renderer_can_explicitly_ignore_globbed_event_types() {
         vec![RecordedEvent {
             event_id: EventId::new("event-1"),
             event_type: EventType::new("counter:legacy-reset"),
-            revision: Revision::new("event-1"),
+            revision: Revision::generate(),
             metadata: EventMetadata::default(),
             data: EventData::json(&serde_json::json!({})).expect("json encode should succeed"),
         }],
@@ -161,7 +162,7 @@ fn renderer_can_explicitly_ignore_globbed_event_types() {
     let renderer = Renderer::<State>::new().ignore(EventPattern::glob("counter:legacy-*").unwrap());
 
     renderer
-        .render(&aggregate)
+        .render(aggregate)
         .expect("explicitly ignored event types should not fail");
 }
 
@@ -172,6 +173,7 @@ fn renderer_can_reduce_globbed_event_types() {
         count: u32,
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn reduce(
         state: &mut State,
         _event_type: &EventType,
@@ -186,7 +188,7 @@ fn renderer_can_reduce_globbed_event_types() {
         vec![RecordedEvent {
             event_id: EventId::new("event-1"),
             event_type: EventType::new("counter:legacy-reset"),
-            revision: Revision::new("event-1"),
+            revision: Revision::generate(),
             metadata: EventMetadata::default(),
             data: EventData::json(&serde_json::json!({})).expect("json encode should succeed"),
         }],
@@ -194,7 +196,7 @@ fn renderer_can_reduce_globbed_event_types() {
     let renderer = Renderer::new().with(EventPattern::glob("counter:legacy-*").unwrap(), reduce);
 
     let entity = renderer
-        .render(&aggregate)
+        .render(aggregate)
         .expect("globbed event types should be reducible");
 
     assert_eq!(entity.state.count, 1);

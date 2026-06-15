@@ -6,7 +6,7 @@ mod service_macro;
 use convert_case::{Case, Casing};
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, Data, DeriveInput, Fields, LitStr};
+use syn::{Data, DeriveInput, Fields, LitStr, parse_macro_input};
 
 /// Annotates an environment capability trait and emits adapter glue.
 ///
@@ -90,13 +90,13 @@ pub fn derive_command(input: TokenStream) -> TokenStream {
 
         match &variant.fields {
             Fields::Unit => quote! {
-                Self::#variant_name => wee_events::CommandName::new(#command_name),
+                Self::#variant_name => wee_events::CommandName::new_const(#command_name),
             },
             Fields::Named(_) => quote! {
-                Self::#variant_name { .. } => wee_events::CommandName::new(#command_name),
+                Self::#variant_name { .. } => wee_events::CommandName::new_const(#command_name),
             },
             Fields::Unnamed(_) => quote! {
-                Self::#variant_name(..) => wee_events::CommandName::new(#command_name),
+                Self::#variant_name(..) => wee_events::CommandName::new_const(#command_name),
             },
         }
     });
@@ -126,7 +126,7 @@ pub fn derive_command(input: TokenStream) -> TokenStream {
 /// (defaults to the enum name in kebab-case with "-event" suffix stripped).
 ///
 /// Also generates associated constants for each variant's `EventType`, named
-/// in SCREAMING_SNAKE_CASE (e.g., `CampaignEvent::CREW_INJURED`).
+/// in `SCREAMING_SNAKE_CASE` (e.g., `CampaignEvent::CREW_INJURED`).
 #[proc_macro_derive(DomainEvent, attributes(domain_event))]
 pub fn derive_domain_event(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -150,13 +150,13 @@ pub fn derive_domain_event(input: TokenStream) -> TokenStream {
 
         match &variant.fields {
             Fields::Unit => quote! {
-                Self::#variant_name => wee_events::EventType::new(#event_type),
+                Self::#variant_name => wee_events::EventType::new_const(#event_type),
             },
             Fields::Named(_) => quote! {
-                Self::#variant_name { .. } => wee_events::EventType::new(#event_type),
+                Self::#variant_name { .. } => wee_events::EventType::new_const(#event_type),
             },
             Fields::Unnamed(_) => quote! {
-                Self::#variant_name(..) => wee_events::EventType::new(#event_type),
+                Self::#variant_name(..) => wee_events::EventType::new_const(#event_type),
             },
         }
     });

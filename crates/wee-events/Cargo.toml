@@ -7,13 +7,21 @@ rust-version.workspace = true
 readme.workspace = true
 # TODO: set public repository/homepage/documentation URLs before publishing.
 
+# Surpress so --save-baseline etc from criterion can be used
+[lib]
+bench = false
+
 [features]
+default = []
+cbor = ["dep:ciborium"]
 testing = ["dep:criterion", "dep:tokio", "dep:futures"]
 
 [dependencies]
-ciborium = { workspace = true }
+ciborium = { workspace = true, optional = true }
 criterion = { version = "0.5", features = ["async_tokio"], optional = true }
+dashmap = { workspace = true }
 futures = { version = "0.3", optional = true }
+parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -31,3 +39,10 @@ trybuild = "1"
 [[bench]]
 name = "memory_store"
 harness = false
+
+[[bench]]
+name = "fat_payload"
+harness = false
+
+[lints]
+workspace = true

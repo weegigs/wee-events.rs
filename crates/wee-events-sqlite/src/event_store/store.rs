@@ -1,7 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
-use std::marker::PhantomData;
 use std::path::Path;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -11,16 +9,15 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::sleep;
 use ulid::{Generator, Ulid};
 use wee_events::{
-    Aggregate, AggregateId, AggregateType, ChangeSet, CorrelationId, EventData, EventId,
+    Aggregate, AggregateId, AggregateType, ChangeSet, CorrelationId, Encoding, EventData, EventId,
     EventMetadata, EventStore as EventStoreApi, PublishOptions, RawEvent, RecordedEvent,
     RetryDiagnostics, Revision,
 };
 
-use crate::{database, Error};
+use crate::{Error, database};
 
 use super::backends::{
-    BackendBinding, InMemoryTargetResolver, LocalPartitionCatalog, NamedTargetCatalog,
-    SingleTargetCatalog,
+    InMemoryTargetResolver, LocalPartitionCatalog, NamedTargetCatalog, SingleTargetCatalog,
 };
 use super::strategies::{
     GlobalStrategy, LocalPartitionStrategy, PartitionNamingStrategy, PartitionRead,
@@ -36,6 +33,11 @@ const BASE_RETRY_DELAY_MS: u64 = 2;
 const MAX_RETRY_DELAY_MS: u64 = 64;
 const LAZY_CREATE_PARTITION_READY_ATTEMPTS: usize = 30;
 const LAZY_CREATE_PARTITION_READY_DELAY_MS: u64 = 1_000;
+const MAX_BUSY_RETRIES: usize = 8;
+const BUSY_BASE_DELAY_MS: u64 = 5;
+const BUSY_MAX_DELAY_MS: u64 = 250;
+const SQLITE_BUSY: i32 = 5;
+const SQLITE_LOCKED: i32 = 6;
 
 /// SQLite-compatible event store backed by libSQL.
 ///
@@ -46,78 +48,122 @@ const LAZY_CREATE_PARTITION_READY_DELAY_MS: u64 = 1_000;
 /// [`AggregateStrategy`] — one per aggregate), the connection map grows
 /// monotonically. Long-running processes with many distinct aggregates should
 /// consider a bounded strategy like [`HashedStrategy`] or [`TypeStrategy`].
-pub struct EventStore<
-    S = GlobalStrategy,
-    C = LocalPartitionCatalog<GlobalStrategy>,
-    W = wee_events::JsonEncoder,
-> where
+pub struct EventStore<S = GlobalStrategy, C = LocalPartitionCatalog<GlobalStrategy>>
+where
     S: PartitionStrategy,
     C: PartitionCatalog<S::Partition>,
-    W: wee_events::EventEncoder,
 {
     strategy: S,
     catalog: C,
-    writer: W,
+    encoding: Encoding,
     connections: AsyncMutex<HashMap<S::Partition, SharedConnection>>,
-    known_partitions: AsyncMutex<BTreeSet<S::Partition>>,
     generator: Mutex<Generator>,
 }
 
-pub type LocalStore<S, W = wee_events::JsonEncoder> = EventStore<S, LocalPartitionCatalog<S>, W>;
-pub type InMemoryStore<S, W = wee_events::JsonEncoder> = EventStore<
-    S,
-    SingleTargetCatalog<<S as PartitionStrategy>::Partition, InMemoryTargetResolver>,
-    W,
->;
-pub type SingleRemoteStore<S, R, W = wee_events::JsonEncoder> =
-    EventStore<S, SingleTargetCatalog<<S as PartitionStrategy>::Partition, R>, W>;
-pub type NamedRemoteStore<S, R, W = wee_events::JsonEncoder> =
-    EventStore<S, NamedTargetCatalog<S, R>, W>;
-pub type RemoteStore<S, C, W = wee_events::JsonEncoder> = EventStore<S, C, W>;
+pub type LocalStore<S> = EventStore<S, LocalPartitionCatalog<S>>;
+pub type InMemoryStore<S> =
+    EventStore<S, SingleTargetCatalog<<S as PartitionStrategy>::Partition, InMemoryTargetResolver>>;
+pub type SingleRemoteStore<S, R> =
+    EventStore<S, SingleTargetCatalog<<S as PartitionStrategy>::Partition, R>>;
+pub type NamedRemoteStore<S, R> = EventStore<S, NamedTargetCatalog<S, R>>;
+pub type RemoteStore<S, C> = EventStore<S, C>;
 
-impl EventStore<GlobalStrategy, LocalPartitionCatalog<GlobalStrategy>, wee_events::JsonEncoder> {
-    pub fn builder() -> EventStoreBuilder<MissingBackend, MissingStrategy<()>, MissingWriter> {
-        EventStoreBuilder::new()
-    }
-}
-
-impl<S> EventStore<S, LocalPartitionCatalog<S>, wee_events::JsonEncoder>
+impl<S> EventStore<S, LocalPartitionCatalog<S>>
 where
     S: LocalPartitionStrategy,
 {
-    /// Opens a local store with the requested partitioning strategy.
-    ///
-    /// For `GlobalStrategy`, `path` is the database file.
-    /// For sharded strategies, `path` is the root directory.
-    pub async fn open_with_strategy(path: impl AsRef<Path>, strategy: S) -> Result<Self, Error> {
-        let store = EventStore::from_catalog(
-            strategy.clone(),
-            LocalPartitionCatalog::new(path.as_ref().to_path_buf(), strategy)?,
-            wee_events::JsonEncoder,
-        );
-
-        for partition in store.strategy.bootstrap_partitions() {
-            let _ = store.ensure_partition_open(&partition).await?;
-        }
-
-        Ok(store)
+    /// Opens a file-backed store at `path`. For `GlobalStrategy`, `path` is
+    /// the database file; for sharded strategies, `path` is the root directory.
+    /// Encoding defaults to JSON — call [`with_encoding`](Self::with_encoding)
+    /// to override.
+    pub async fn open_local(path: impl AsRef<Path>, strategy: S) -> Result<Self, Error> {
+        let catalog = LocalPartitionCatalog::new(path.as_ref().to_path_buf(), strategy.clone())?;
+        bootstrap(EventStore::from_catalog(strategy, catalog, Encoding::Json)).await
     }
 }
 
-impl<S, C, W> EventStore<S, C, W>
+impl<S> EventStore<S, SingleTargetCatalog<S::Partition, InMemoryTargetResolver>>
+where
+    S: PartitionStrategy + SingleTargetPartitionStrategy,
+{
+    /// Opens an ephemeral in-memory store. Encoding defaults to JSON — call
+    /// [`with_encoding`](Self::with_encoding) to override.
+    pub async fn open_in_memory(strategy: S) -> Result<Self, Error> {
+        let catalog = SingleTargetCatalog::new(InMemoryTargetResolver);
+        bootstrap(EventStore::from_catalog(strategy, catalog, Encoding::Json)).await
+    }
+}
+
+impl<S, R> EventStore<S, SingleTargetCatalog<S::Partition, R>>
+where
+    S: PartitionStrategy + SingleTargetPartitionStrategy,
+    R: SqldDefaultProvisioner,
+{
+    /// Opens a single-target sqld-backed store. Encoding defaults to JSON.
+    pub async fn open_sqld_default(provisioner: R, strategy: S) -> Result<Self, Error> {
+        let catalog = SingleTargetCatalog::new(provisioner);
+        bootstrap(EventStore::from_catalog(strategy, catalog, Encoding::Json)).await
+    }
+}
+
+impl<S, R> EventStore<S, NamedTargetCatalog<S, R>>
+where
+    S: PartitionStrategy + SqldNamespacedPartitionStrategy + PartitionNamingStrategy,
+    R: SqldNamespacedProvisioner,
+{
+    /// Opens a namespaced sqld-backed store. The strategy supplies stable
+    /// partition names; the provisioner maps them to sqld namespaces.
+    /// Encoding defaults to JSON.
+    pub async fn open_sqld_namespaced(provisioner: R, strategy: S) -> Result<Self, Error> {
+        let catalog = NamedTargetCatalog::new(strategy.clone(), provisioner);
+        bootstrap(EventStore::from_catalog(strategy, catalog, Encoding::Json)).await
+    }
+}
+
+impl<S, R> EventStore<S, NamedTargetCatalog<S, R>>
+where
+    S: PartitionStrategy + PartitionNamingStrategy,
+    R: TursoProvisioner,
+{
+    /// Opens a Turso-backed store. Encoding defaults to JSON.
+    pub async fn open_turso(provisioner: R, strategy: S) -> Result<Self, Error> {
+        let catalog = NamedTargetCatalog::new(strategy.clone(), provisioner);
+        bootstrap(EventStore::from_catalog(strategy, catalog, Encoding::Json)).await
+    }
+}
+
+/// Bootstraps partitions for a freshly-built store and returns it.
+async fn bootstrap<S, C>(store: EventStore<S, C>) -> Result<EventStore<S, C>, Error>
 where
     S: PartitionStrategy,
     C: PartitionCatalog<S::Partition>,
-    W: wee_events::EventEncoder,
 {
+    for partition in store.strategy.bootstrap_partitions() {
+        let _ = store.ensure_partition_open(&partition).await?;
+    }
+    Ok(store)
+}
+
+impl<S, C> EventStore<S, C>
+where
+    S: PartitionStrategy,
+    C: PartitionCatalog<S::Partition>,
+{
+    /// Overrides the on-disk payload encoding. Defaults to [`Encoding::Json`]
+    /// at construction. Safe to call after `open_*` — encoding only affects
+    /// future writes.
+    pub fn with_encoding(mut self, encoding: Encoding) -> Self {
+        self.encoding = encoding;
+        self
+    }
+
     /// Builds a store from a custom partition catalog.
-    pub fn from_catalog(strategy: S, catalog: C, writer: W) -> Self {
+    pub fn from_catalog(strategy: S, catalog: C, encoding: Encoding) -> Self {
         Self {
             strategy,
             catalog,
-            writer,
+            encoding,
             connections: AsyncMutex::new(HashMap::new()),
-            known_partitions: AsyncMutex::new(BTreeSet::new()),
             generator: Mutex::new(Generator::new()),
         }
     }
@@ -192,8 +238,8 @@ where
         &self,
         partition: &S::Partition,
     ) -> Result<SharedConnection, Error> {
-        self.remember_partition(partition).await;
-        if let Some(conn) = self.connections.lock().await.get(partition).cloned() {
+        let mut connections = self.connections.lock().await;
+        if let Some(conn) = connections.get(partition).cloned() {
             return Ok(conn);
         }
 
@@ -203,20 +249,16 @@ where
             .prepare_connection_for_partition(partition, &conn)
             .await?;
         let new_conn = Arc::new(AsyncMutex::new(conn));
-
-        let mut connections = self.connections.lock().await;
-        Ok(connections
-            .entry(partition.clone())
-            .or_insert_with(|| Arc::clone(&new_conn))
-            .clone())
+        connections.insert(partition.clone(), Arc::clone(&new_conn));
+        Ok(new_conn)
     }
 
     async fn open_partition_if_exists(
         &self,
         partition: &S::Partition,
     ) -> Result<Option<SharedConnection>, Error> {
-        self.remember_partition(partition).await;
-        if let Some(conn) = self.connections.lock().await.get(partition).cloned() {
+        let mut connections = self.connections.lock().await;
+        if let Some(conn) = connections.get(partition).cloned() {
             return Ok(Some(conn));
         }
 
@@ -233,27 +275,14 @@ where
             .prepare_connection_for_partition(partition, &conn)
             .await?;
         let new_conn = Arc::new(AsyncMutex::new(conn));
-        let mut connections = self.connections.lock().await;
-        Ok(Some(
-            connections
-                .entry(partition.clone())
-                .or_insert_with(|| Arc::clone(&new_conn))
-                .clone(),
-        ))
-    }
-
-    async fn remember_partition(&self, partition: &S::Partition) {
-        let mut known = self.known_partitions.lock().await;
-        known.insert(partition.clone());
+        connections.insert(partition.clone(), Arc::clone(&new_conn));
+        Ok(Some(new_conn))
     }
 
     async fn all_known_partitions(&self) -> Result<Vec<S::Partition>, Error> {
         let mut partitions: BTreeSet<S::Partition> =
             self.catalog.partitions().await?.into_iter().collect();
-        {
-            let known = self.known_partitions.lock().await;
-            partitions.extend(known.iter().cloned());
-        }
+        partitions.extend(self.connections.lock().await.keys().cloned());
         Ok(partitions.into_iter().collect())
     }
 
@@ -313,12 +342,11 @@ where
         Ok(ids)
     }
 
-    fn generate_ulid(&self) -> Result<String, Error> {
+    fn generate_ulid(&self) -> Result<Ulid, Error> {
         self.generator
             .lock()
             .map_err(|e| Error::Internal(e.to_string()))?
             .generate()
-            .map(|u| u.to_string())
             .map_err(|e| Error::Internal(e.to_string()))
     }
 
@@ -342,11 +370,15 @@ where
             let correlation_id: Option<String> = row.get(4)?;
             let encoding: String = row.get(5)?;
             let data: Vec<u8> = row.get(6)?;
+            let encoding = Encoding::from_encoding_str(&encoding)
+                .map_err(|e| Error::Internal(format!("event row has unknown encoding: {e}")))?;
 
+            let revision = Revision::try_from(revision)
+                .map_err(|e| Error::Internal(format!("event row has invalid revision: {e}")))?;
             events.push(RecordedEvent {
                 event_id: EventId::new(event_id),
                 event_type: wee_events::EventType::new(event_type),
-                revision: Revision::new(revision),
+                revision,
                 metadata: EventMetadata {
                     causation_id: causation_id.map(EventId::new),
                     correlation_id: correlation_id.map(CorrelationId::new),
@@ -360,7 +392,6 @@ where
 
     async fn load_aggregate(&self, id: &AggregateId) -> Result<Aggregate, Error> {
         let partition = self.strategy.partition_for_aggregate(id)?;
-        self.remember_partition(&partition).await;
         let Some(conn) = self.open_partition_if_exists(&partition).await? else {
             return Ok(Aggregate::empty(id.clone()));
         };
@@ -391,6 +422,7 @@ where
     }
 
     async fn publish_with_connection(
+        //TODO: should probably consume, why do you still need some thing after publishing it?
         &self,
         conn: &Connection,
         aggregate_id: &AggregateId,
@@ -411,10 +443,21 @@ where
 
         let mut last_conflict = None;
         for attempt in 0..max_attempts {
-            match self
+            let mut publish_result = self
                 .try_publish_once(conn, aggregate_id, &options, &events)
-                .await
-            {
+                .await;
+            for busy_attempt in 0..MAX_BUSY_RETRIES {
+                match &publish_result {
+                    Err(PublishAttemptError::Store(error)) if is_sqlite_busy(error) => {
+                        sleep(busy_retry_delay(busy_attempt)).await;
+                        publish_result = self
+                            .try_publish_once(conn, aggregate_id, &options, &events)
+                            .await;
+                    }
+                    _ => break,
+                }
+            }
+            match publish_result {
                 Ok(changeset) => return Ok(changeset),
                 Err(PublishAttemptError::Conflict(conflict)) if can_auto_retry => {
                     last_conflict = Some(RetryDiagnostics {
@@ -439,10 +482,10 @@ where
             }
         }
 
-        Err(Error::WeeEvents(wee_events::Error::RetryExhausted {
-            attempts: max_attempts,
-            diagnostics: last_conflict.expect("retry loop always records the last conflict"),
-        }))
+        Err(Error::WeeEvents(wee_events::Error::retry_exhausted(
+            max_attempts,
+            last_conflict.expect("retry loop always records the last conflict"),
+        )))
     }
 
     async fn publish_to_aggregate(
@@ -452,7 +495,6 @@ where
         events: Vec<RawEvent>,
     ) -> Result<ChangeSet, Error> {
         let partition = self.strategy.partition_for_aggregate(aggregate_id)?;
-        self.remember_partition(&partition).await;
 
         for attempt in 0..LAZY_CREATE_PARTITION_READY_ATTEMPTS {
             let result = async {
@@ -497,8 +539,10 @@ where
 
         let mut recorded = Vec::with_capacity(events.len());
         for (index, raw) in events.iter().enumerate() {
-            let event_id = EventId::new(self.generate_ulid()?);
-            let revision = self.generate_ulid()?;
+            let event_id_ulid = self.generate_ulid()?;
+            let revision_ulid = self.generate_ulid()?;
+            let event_id = EventId::new(event_id_ulid.to_string());
+            let revision_str = revision_ulid.to_string();
             let changes = execute_publish_statement(
                 &tx,
                 PublishRow {
@@ -508,15 +552,16 @@ where
                     raw,
                     metadata: &metadata,
                     event_id: &event_id,
-                    revision: &revision,
+                    revision: &revision_str,
                 },
             )
             .await?;
 
             if changes == 0 {
-                let attempted_revision = Revision::new(revision.clone());
+                let attempted_revision = Revision::from_ulid(revision_ulid);
                 let actual = match Self::current_revision(&tx, aggregate_id).await? {
-                    Some(value) => Revision::new(value),
+                    Some(value) => Revision::try_from(value)
+                        .map_err(|e| Error::Internal(format!("stored revision is invalid: {e}")))?,
                     None => Revision::zero(),
                 };
                 let expected = options
@@ -531,13 +576,13 @@ where
                 }));
             }
 
-            recorded.push(RecordedEvent {
+            recorded.push(std::sync::Arc::new(RecordedEvent {
                 event_id,
                 event_type: raw.event_type.clone(),
-                revision: Revision::new(revision),
+                revision: Revision::from_ulid(revision_ulid),
                 metadata: metadata.clone(),
                 data: raw.data.clone(),
-            });
+            }));
         }
 
         tx.commit().await.map_err(Error::from)?;
@@ -574,16 +619,12 @@ impl From<Error> for PublishAttemptError {
 }
 
 fn retry_delay(attempt: usize) -> Duration {
-    let exponent = attempt.min(5) as u32;
+    let exponent = u32::try_from(attempt.min(5)).expect("clamped to 5");
     let backoff_ms = (BASE_RETRY_DELAY_MS << exponent).min(MAX_RETRY_DELAY_MS);
     let jitter_ms = if backoff_ms == 0 {
         0
     } else {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos() as u64
-            % (backoff_ms + 1)
+        next_jitter() % (backoff_ms + 1)
     };
 
     Duration::from_millis(backoff_ms + jitter_ms)
@@ -593,16 +634,76 @@ fn lazy_create_partition_ready_delay() -> Duration {
     Duration::from_millis(LAZY_CREATE_PARTITION_READY_DELAY_MS)
 }
 
-fn is_lazy_create_partition_not_ready(error: &Error) -> bool {
+fn busy_retry_delay(attempt: usize) -> Duration {
+    let exponent = u32::try_from(attempt.min(6)).expect("clamped to 6");
+    let backoff_ms = (BUSY_BASE_DELAY_MS << exponent).min(BUSY_MAX_DELAY_MS);
+    let jitter_ms = next_jitter() % (backoff_ms + 1);
+    Duration::from_millis(backoff_ms + jitter_ms)
+}
+
+/// Lock-free xorshift64* PRNG for retry jitter. Seeded from the system clock
+/// on first call. Relaxed ordering — occasional double-step under racy callers
+/// is fine; we only need decorrelated short delays.
+fn next_jitter() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static STATE: AtomicU64 = AtomicU64::new(0);
+    let mut x = STATE.load(Ordering::Relaxed);
+    if x == 0 {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        // Truncation to low 64 bits is intentional: this is a PRNG seed,
+        // not a wall-clock timestamp.
+        #[allow(clippy::cast_possible_truncation)]
+        let seed = (nanos as u64) | 1;
+        x = seed;
+    }
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    STATE.store(x, Ordering::Relaxed);
+    x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+}
+
+fn is_sqlite_busy(error: &Error) -> bool {
     match error {
-        Error::Libsql(error) => is_lazy_create_partition_not_ready_message(&error.to_string()),
+        Error::Libsql(
+            libsql::Error::SqliteFailure(code, _) | libsql::Error::RemoteSqliteFailure(_, code, _),
+        ) => *code == SQLITE_BUSY || *code == SQLITE_LOCKED,
         _ => false,
     }
 }
 
+/// Detects the lazy-create "namespace doesn't exist yet" condition for sqld /
+/// Turso remote backends. The underlying libsql error doesn't carry a
+/// structured code for this case — it bubbles up as a 404 inside one of the
+/// remote-transport variants. We narrow to those variants so unrelated local
+/// failures can't accidentally match, then string-test the inner message.
+fn is_lazy_create_partition_not_ready(error: &Error) -> bool {
+    let Error::Libsql(libsql_error) = error else {
+        return false;
+    };
+    let message = match libsql_error {
+        libsql::Error::ConnectionFailed(s) => s.clone(),
+        // Different inner types implementing Display; can't be merged via `|`.
+        #[allow(clippy::match_same_arms)]
+        libsql::Error::Hrana(e) => e.to_string(),
+        libsql::Error::WriteDelegation(e) => e.to_string(),
+        _ => return false,
+    };
+    is_lazy_create_partition_not_ready_message(&message)
+}
+
 fn is_lazy_create_partition_not_ready_message(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
-    message.contains("namespace") && message.contains("doesn't exist")
+    if !message.contains("namespace") {
+        return false;
+    }
+    message.contains("doesn't exist")
+        || message.contains("does not exist")
+        || message.contains("not found")
+        || message.contains("404")
 }
 
 fn possible_clock_skew_ms(attempted: &Revision, actual: &Revision) -> Option<u64> {
@@ -614,342 +715,24 @@ fn possible_clock_skew_ms(attempted: &Revision, actual: &Revision) -> Option<u64
         .filter(|delta| *delta > 0)
 }
 
-pub struct MissingBackend;
-pub struct InMemoryBackend;
-pub struct LocalBackend {
-    pub(super) path: PathBuf,
-}
-pub struct SqldDefaultBackend<R> {
-    pub(super) provisioner: R,
-}
-pub struct SqldNamespacedBackend<R> {
-    pub(super) provisioner: R,
-}
-pub struct TursoBackend<R> {
-    pub(super) provisioner: R,
-}
-
-pub struct MissingStrategy<P>(PhantomData<P>);
-pub struct WithStrategy<S>(S);
-pub struct MissingWriter;
-pub struct WithWriter<W>(W);
-
-pub struct EventStoreBuilder<B, T, W> {
-    backend: B,
-    strategy: T,
-    writer: W,
-}
-
-impl EventStoreBuilder<MissingBackend, MissingStrategy<()>, MissingWriter> {
-    fn new() -> Self {
-        Self {
-            backend: MissingBackend,
-            strategy: MissingStrategy(PhantomData),
-            writer: MissingWriter,
-        }
-    }
-}
-
-impl<B, T, CurrentWriter> EventStoreBuilder<B, T, CurrentWriter> {
-    pub fn writer<W>(self, writer: W) -> EventStoreBuilder<B, T, WithWriter<W>>
-    where
-        W: wee_events::EventEncoder,
-    {
-        EventStoreBuilder {
-            backend: self.backend,
-            strategy: self.strategy,
-            writer: WithWriter(writer),
-        }
-    }
-}
-
-impl<W> EventStoreBuilder<MissingBackend, MissingStrategy<()>, W> {
-    pub fn local(
-        self,
-        path: impl AsRef<Path>,
-    ) -> EventStoreBuilder<LocalBackend, MissingStrategy<()>, W> {
-        EventStoreBuilder {
-            backend: LocalBackend {
-                path: path.as_ref().to_path_buf(),
-            },
-            strategy: self.strategy,
-            writer: self.writer,
-        }
-    }
-
-    /// Configures an ephemeral single-database in-memory backend.
-    pub fn in_memory(self) -> EventStoreBuilder<InMemoryBackend, MissingStrategy<()>, W> {
-        EventStoreBuilder {
-            backend: InMemoryBackend,
-            strategy: self.strategy,
-            writer: self.writer,
-        }
-    }
-
-    pub fn sqld_default<R>(
-        self,
-        provisioner: R,
-    ) -> EventStoreBuilder<SqldDefaultBackend<R>, MissingStrategy<()>, W>
-    where
-        R: SqldDefaultProvisioner,
-    {
-        EventStoreBuilder {
-            backend: SqldDefaultBackend { provisioner },
-            strategy: MissingStrategy(PhantomData),
-            writer: self.writer,
-        }
-    }
-
-    /// Configures a namespaced sqld backend.
-    ///
-    /// Strategies used with this backend must provide stable partition names.
-    /// The provisioner is responsible for mapping those names to sqld
-    /// namespaces.
-    pub fn sqld_namespaced<R>(
-        self,
-        provisioner: R,
-    ) -> EventStoreBuilder<SqldNamespacedBackend<R>, MissingStrategy<()>, W>
-    where
-        R: SqldNamespacedProvisioner,
-    {
-        EventStoreBuilder {
-            backend: SqldNamespacedBackend { provisioner },
-            strategy: MissingStrategy(PhantomData),
-            writer: self.writer,
-        }
-    }
-
-    pub fn turso<R>(
-        self,
-        provisioner: R,
-    ) -> EventStoreBuilder<TursoBackend<R>, MissingStrategy<()>, W>
-    where
-        R: TursoProvisioner,
-    {
-        EventStoreBuilder {
-            backend: TursoBackend { provisioner },
-            strategy: MissingStrategy(PhantomData),
-            writer: self.writer,
-        }
-    }
-
-    pub fn strategy<S>(self, strategy: S) -> EventStoreBuilder<MissingBackend, WithStrategy<S>, W>
-    where
-        S: PartitionStrategy,
-    {
-        EventStoreBuilder {
-            backend: self.backend,
-            strategy: WithStrategy(strategy),
-            writer: self.writer,
-        }
-    }
-}
-
-impl<W> EventStoreBuilder<LocalBackend, MissingStrategy<()>, W> {
-    pub fn strategy<S>(self, strategy: S) -> EventStoreBuilder<LocalBackend, WithStrategy<S>, W>
-    where
-        S: LocalPartitionStrategy,
-    {
-        EventStoreBuilder {
-            backend: self.backend,
-            strategy: WithStrategy(strategy),
-            writer: self.writer,
-        }
-    }
-}
-
-impl<W> EventStoreBuilder<InMemoryBackend, MissingStrategy<()>, W> {
-    pub fn strategy<S>(self, strategy: S) -> EventStoreBuilder<InMemoryBackend, WithStrategy<S>, W>
-    where
-        S: SingleTargetPartitionStrategy,
-    {
-        EventStoreBuilder {
-            backend: self.backend,
-            strategy: WithStrategy(strategy),
-            writer: self.writer,
-        }
-    }
-}
-
-impl<R, W> EventStoreBuilder<SqldDefaultBackend<R>, MissingStrategy<()>, W>
-where
-    R: SqldDefaultProvisioner,
-{
-    pub fn strategy<S>(
-        self,
-        strategy: S,
-    ) -> EventStoreBuilder<SqldDefaultBackend<R>, WithStrategy<S>, W>
-    where
-        S: SingleTargetPartitionStrategy,
-    {
-        EventStoreBuilder {
-            backend: self.backend,
-            strategy: WithStrategy(strategy),
-            writer: self.writer,
-        }
-    }
-}
-
-impl<R, W> EventStoreBuilder<SqldNamespacedBackend<R>, MissingStrategy<()>, W>
-where
-    R: SqldNamespacedProvisioner,
-{
-    pub fn strategy<S>(
-        self,
-        strategy: S,
-    ) -> EventStoreBuilder<SqldNamespacedBackend<R>, WithStrategy<S>, W>
-    where
-        S: SqldNamespacedPartitionStrategy + PartitionNamingStrategy,
-    {
-        EventStoreBuilder {
-            backend: self.backend,
-            strategy: WithStrategy(strategy),
-            writer: self.writer,
-        }
-    }
-}
-
-impl<R, W> EventStoreBuilder<TursoBackend<R>, MissingStrategy<()>, W>
-where
-    R: TursoProvisioner,
-{
-    pub fn strategy<S>(self, strategy: S) -> EventStoreBuilder<TursoBackend<R>, WithStrategy<S>, W>
-    where
-        S: PartitionNamingStrategy,
-    {
-        EventStoreBuilder {
-            backend: self.backend,
-            strategy: WithStrategy(strategy),
-            writer: self.writer,
-        }
-    }
-}
-
-impl<S, W> EventStoreBuilder<MissingBackend, WithStrategy<S>, W>
-where
-    S: SingleTargetPartitionStrategy,
-{
-    pub fn in_memory(self) -> EventStoreBuilder<InMemoryBackend, WithStrategy<S>, W> {
-        EventStoreBuilder {
-            backend: InMemoryBackend,
-            strategy: self.strategy,
-            writer: self.writer,
-        }
-    }
-}
-
-impl<S, W> EventStoreBuilder<MissingBackend, WithStrategy<S>, W>
-where
-    S: LocalPartitionStrategy,
-{
-    pub fn local(
-        self,
-        path: impl AsRef<Path>,
-    ) -> EventStoreBuilder<LocalBackend, WithStrategy<S>, W> {
-        EventStoreBuilder {
-            backend: LocalBackend {
-                path: path.as_ref().to_path_buf(),
-            },
-            strategy: self.strategy,
-            writer: self.writer,
-        }
-    }
-}
-
-impl<S, W> EventStoreBuilder<MissingBackend, WithStrategy<S>, W>
-where
-    S: SingleTargetPartitionStrategy,
-{
-    pub fn sqld_default(
-        self,
-        provisioner: impl SqldDefaultProvisioner,
-    ) -> EventStoreBuilder<SqldDefaultBackend<impl SqldDefaultProvisioner>, WithStrategy<S>, W>
-    {
-        EventStoreBuilder {
-            backend: SqldDefaultBackend { provisioner },
-            strategy: self.strategy,
-            writer: self.writer,
-        }
-    }
-}
-
-impl<S, W> EventStoreBuilder<MissingBackend, WithStrategy<S>, W>
-where
-    S: PartitionNamingStrategy,
-{
-    pub fn turso(
-        self,
-        provisioner: impl TursoProvisioner,
-    ) -> EventStoreBuilder<TursoBackend<impl TursoProvisioner>, WithStrategy<S>, W> {
-        EventStoreBuilder {
-            backend: TursoBackend { provisioner },
-            strategy: self.strategy,
-            writer: self.writer,
-        }
-    }
-}
-
-impl<S, W> EventStoreBuilder<MissingBackend, WithStrategy<S>, W>
-where
-    S: SqldNamespacedPartitionStrategy + PartitionNamingStrategy,
-{
-    pub fn sqld_namespaced(
-        self,
-        provisioner: impl SqldNamespacedProvisioner,
-    ) -> EventStoreBuilder<SqldNamespacedBackend<impl SqldNamespacedProvisioner>, WithStrategy<S>, W>
-    {
-        EventStoreBuilder {
-            backend: SqldNamespacedBackend { provisioner },
-            strategy: self.strategy,
-            writer: self.writer,
-        }
-    }
-}
-
-impl<B, S, W> EventStoreBuilder<B, WithStrategy<S>, WithWriter<W>>
-where
-    S: PartitionStrategy,
-    B: BackendBinding<S>,
-    W: wee_events::EventEncoder,
-{
-    pub async fn open(self) -> Result<EventStore<S, B::Catalog, W>, Error> {
-        let store = EventStore::from_catalog(
-            self.strategy.0.clone(),
-            self.backend.into_catalog(&self.strategy.0)?,
-            self.writer.0,
-        );
-
-        for partition in store.strategy.bootstrap_partitions() {
-            let _ = store.ensure_partition_open(&partition).await?;
-        }
-
-        Ok(store)
-    }
-}
-
-impl<S, C, W> wee_events::EncodesEvents for EventStore<S, C, W>
+impl<S, C> wee_events::EncodesEvents for EventStore<S, C>
 where
     S: PartitionStrategy,
     C: PartitionCatalog<S::Partition>,
-    W: wee_events::EventEncoder + Send + Sync,
 {
-    type Encoder = W;
-
-    fn event_encoder(&self) -> &Self::Encoder {
-        &self.writer
+    #[inline]
+    fn encoding(&self) -> Encoding {
+        self.encoding
     }
 }
 
-impl<S, C, W> EventStoreApi for EventStore<S, C, W>
+impl<S, C> EventStoreApi for EventStore<S, C>
 where
     S: PartitionStrategy,
     C: PartitionCatalog<S::Partition>,
-    W: wee_events::EventEncoder + Send + Sync + 'static,
 {
-    type Error = Error;
-
-    async fn load(&self, id: &AggregateId) -> Result<Aggregate, Self::Error> {
-        self.load_aggregate(id).await
+    async fn load(&self, id: &AggregateId) -> Result<Aggregate, wee_events::Error> {
+        self.load_aggregate(id).await.map_err(Into::into)
     }
 
     async fn publish(
@@ -957,35 +740,46 @@ where
         aggregate_id: &AggregateId,
         options: PublishOptions,
         events: Vec<RawEvent>,
-    ) -> Result<ChangeSet, Self::Error> {
+    ) -> Result<ChangeSet, wee_events::Error> {
         self.publish_to_aggregate(aggregate_id, options, events)
             .await
+            .map_err(Into::into)
     }
 }
 
-/// Shared INSERT prefix for all publish variants. The WHERE clause varies
-/// by concurrency mode; only the suffix changes.
-const INSERT_PREFIX: &str =
-    "INSERT INTO events (event_id, aggregate_type, aggregate_key, event_type, revision,
-                         causation_id, correlation_id, encoding, data)
-     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9";
+/// Initial-publish INSERT: aggregate must have no prior events.
+const SQL_INITIAL: &str = "\
+    INSERT INTO events (event_id, aggregate_type, aggregate_key, event_type, revision,
+                        causation_id, correlation_id, encoding, data)
+    SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+    WHERE NOT EXISTS (
+        SELECT 1 FROM events
+        WHERE aggregate_type = ?2 AND aggregate_key = ?3
+    )";
 
-/// WHERE clause for the common case: new revision must exceed current max.
-const ADVANCE_WHERE: &str = " WHERE ?5 > COALESCE(
-         (SELECT MAX(revision) FROM events
-          WHERE aggregate_type = ?2 AND aggregate_key = ?3),
-         '00000000000000000000000000'
-     )";
+/// Exact-revision INSERT: monotonic advance + caller-supplied prior revision must match current max.
+const SQL_EXACT: &str = "\
+    INSERT INTO events (event_id, aggregate_type, aggregate_key, event_type, revision,
+                        causation_id, correlation_id, encoding, data)
+    SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+    WHERE ?5 > COALESCE(
+        (SELECT MAX(revision) FROM events
+         WHERE aggregate_type = ?2 AND aggregate_key = ?3),
+        '00000000000000000000000000'
+    )
+    AND (SELECT MAX(revision) FROM events
+         WHERE aggregate_type = ?2 AND aggregate_key = ?3) = ?10";
 
-/// WHERE clause for initial publish: aggregate must have no events.
-const INITIAL_WHERE: &str = " WHERE NOT EXISTS (
-         SELECT 1 FROM events
-         WHERE aggregate_type = ?2 AND aggregate_key = ?3
-     )";
-
-/// Extra AND clause for exact revision match (appended after ADVANCE_WHERE).
-const EXACT_SUFFIX: &str = " AND (SELECT MAX(revision) FROM events
-          WHERE aggregate_type = ?2 AND aggregate_key = ?3) = ?10";
+/// Advance INSERT: monotonic advance only, no exact-prior check.
+const SQL_ADVANCE: &str = "\
+    INSERT INTO events (event_id, aggregate_type, aggregate_key, event_type, revision,
+                        causation_id, correlation_id, encoding, data)
+    SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+    WHERE ?5 > COALESCE(
+        (SELECT MAX(revision) FROM events
+         WHERE aggregate_type = ?2 AND aggregate_key = ?3),
+        '00000000000000000000000000'
+    )";
 
 struct PublishRow<'a> {
     index: usize,
@@ -1007,14 +801,21 @@ async fn execute_publish_statement(
     tx: &libsql::Transaction,
     row: PublishRow<'_>,
 ) -> Result<u64, Error> {
-    let causation = row.metadata.causation_id.as_ref().map(|id| id.as_str());
-    let correlation = row.metadata.correlation_id.as_ref().map(|id| id.as_str());
+    let causation = row
+        .metadata
+        .causation_id
+        .as_ref()
+        .map(wee_events::EventId::as_str);
+    let correlation = row
+        .metadata
+        .correlation_id
+        .as_ref()
+        .map(wee_events::CorrelationId::as_str);
 
     match (row.index, &row.options.expected_revision) {
-        (0, Some(expected)) if expected.is_zero() => {
-            let sql = format!("{INSERT_PREFIX}{INITIAL_WHERE}");
-            tx.execute(
-                &sql,
+        (0, Some(expected)) if expected.is_zero() => tx
+            .execute(
+                SQL_INITIAL,
                 libsql::params![
                     row.event_id.as_str(),
                     row.aggregate_id.aggregate_type().as_str(),
@@ -1028,12 +829,10 @@ async fn execute_publish_statement(
                 ],
             )
             .await
-            .map_err(Into::into)
-        }
-        (0, Some(expected)) => {
-            let sql = format!("{INSERT_PREFIX}{ADVANCE_WHERE}{EXACT_SUFFIX}");
-            tx.execute(
-                &sql,
+            .map_err(Into::into),
+        (0, Some(expected)) => tx
+            .execute(
+                SQL_EXACT,
                 libsql::params![
                     row.event_id.as_str(),
                     row.aggregate_id.aggregate_type().as_str(),
@@ -1048,12 +847,10 @@ async fn execute_publish_statement(
                 ],
             )
             .await
-            .map_err(Into::into)
-        }
-        _ => {
-            let sql = format!("{INSERT_PREFIX}{ADVANCE_WHERE}");
-            tx.execute(
-                &sql,
+            .map_err(Into::into),
+        _ => tx
+            .execute(
+                SQL_ADVANCE,
                 libsql::params![
                     row.event_id.as_str(),
                     row.aggregate_id.aggregate_type().as_str(),
@@ -1067,8 +864,7 @@ async fn execute_publish_statement(
                 ],
             )
             .await
-            .map_err(Into::into)
-        }
+            .map_err(Into::into),
     }
 }
 
@@ -1097,17 +893,17 @@ mod tests {
 
     #[test]
     fn possible_clock_skew_reports_positive_timestamp_gap() {
-        let attempted = Revision::new(Ulid::from_parts(1_000, 7).to_string());
-        let actual = Revision::new(Ulid::from_parts(1_017, 3).to_string());
+        let attempted = Revision::from_ulid(Ulid::from_parts(1_000, 7));
+        let actual = Revision::from_ulid(Ulid::from_parts(1_017, 3));
 
         assert_eq!(possible_clock_skew_ms(&attempted, &actual), Some(17));
     }
 
     #[test]
     fn possible_clock_skew_ignores_non_positive_gaps() {
-        let attempted = Revision::new(Ulid::from_parts(1_000, 7).to_string());
-        let same_ms = Revision::new(Ulid::from_parts(1_000, 99).to_string());
-        let earlier = Revision::new(Ulid::from_parts(999, 3).to_string());
+        let attempted = Revision::from_ulid(Ulid::from_parts(1_000, 7));
+        let same_ms = Revision::from_ulid(Ulid::from_parts(1_000, 99));
+        let earlier = Revision::from_ulid(Ulid::from_parts(999, 3));
 
         assert_eq!(possible_clock_skew_ms(&attempted, &same_ms), None);
         assert_eq!(possible_clock_skew_ms(&attempted, &earlier), None);

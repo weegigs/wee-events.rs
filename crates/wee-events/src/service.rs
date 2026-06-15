@@ -1,6 +1,5 @@
 use crate::command::Command;
 use crate::entity::Entity;
-use crate::event::DeserializeJsonError;
 use crate::id::AggregateId;
 
 /// A structured rejection from the domain layer. Indicates a command was
@@ -92,29 +91,11 @@ where
     }
 }
 
-/// Lift a [`DeserializeJsonError`] into a [`ServiceError`]: encoding-mismatch
-/// is a structural store-contract failure (routed through `Store(E)` via the
-/// store error's `From<crate::Error>` impl), and a decode failure is a codec
-/// failure (routed through `Codec` as a `DecodeError::Json`).
-impl<E> From<DeserializeJsonError> for ServiceError<E>
-where
-    E: From<crate::Error> + std::error::Error + Send + Sync + 'static,
-{
-    fn from(err: DeserializeJsonError) -> Self {
-        match err {
-            DeserializeJsonError::EncodingMismatch { expected, actual } => {
-                ServiceError::Store(E::from(crate::Error::EncodingMismatch { expected, actual }))
-            }
-            DeserializeJsonError::Decode(e) => {
-                ServiceError::Codec(crate::CodecError::Decode(crate::DecodeError::Json(e)))
-            }
-        }
-    }
-}
-
 /// Lift a [`crate::Error`] into a [`ServiceError`] via the inner store error's
-/// `From<crate::Error>` impl. This satisfies the `EH: From<crate::Error>` bound
-/// on `BuiltService` so handlers can use `ServiceError<E>` as their error type.
+/// `From<crate::Error>` impl. Used when `ServiceError<E>` plays the role of
+/// `EL` in `BuiltService` — `EL: From<crate::Error>` is the canonical gateway
+/// from infrastructure failures (factory, loader, store) into the service
+/// error world.
 impl<E> From<crate::Error> for ServiceError<E>
 where
     E: From<crate::Error> + std::error::Error + Send + Sync + 'static,
@@ -127,7 +108,7 @@ where
 /// Hidden implementation details used by generated code.
 #[doc(hidden)]
 pub mod __private {
-    use super::*;
+    use super::{AggregateId, Entity};
     use core::future::Future;
 
     /// Marker trait that associates a service with its state type via an
@@ -153,7 +134,7 @@ pub mod __private {
 
         fn dispatch_command(
             &self,
-            id: &AggregateId,
+            id: AggregateId,
             cmd: C,
         ) -> impl Future<Output = Result<Entity<Self::State>, Self::Error>> + Send;
     }
@@ -199,12 +180,12 @@ pub trait TypedService<S>: __private::ServiceState<State = S> + Send + Sync {
 
     fn load(
         &self,
-        id: &AggregateId,
+        id: AggregateId,
     ) -> impl core::future::Future<Output = Result<Entity<S>, Self::Error>> + Send;
 
     fn execute<C>(
         &self,
-        id: &AggregateId,
+        id: AggregateId,
         cmd: C,
     ) -> impl core::future::Future<
         Output = Result<Entity<S>, <Self as __private::DispatchCommand<C>>::Error>,

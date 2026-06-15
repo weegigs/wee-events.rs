@@ -5,7 +5,7 @@ error[E0422]: cannot find struct, variant or union type `CounterServiceBinding` 
    | -------------------- similarly named struct `CounterService` defined here
 ...
 57 |     let binding = CounterServiceBinding {
-   |                   ^^^^^^^^^^^^^^^^^^^^^ help: a struct with a similar name exists: `CounterService`
+   |                   ^^^^^^^^^^^^^^^^^^^^^
    |
 note: struct `crate::__wee_events_counter_service_restate::CounterServiceBinding` exists but is inaccessible
   --> tests/ui/attach_to_direct_binding_bypass.rs:43:1
@@ -13,3 +13,8 @@ note: struct `crate::__wee_events_counter_service_restate::CounterServiceBinding
 43 | wee_events::service! {
    | ^^^^^^^^^^^^^^^^^^^^ not accessible
    = note: this error originates in the macro `wee_events::service` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: a struct with a similar name exists
+   |
+57 -     let binding = CounterServiceBinding {
+57 +     let binding = CounterService {
+   |

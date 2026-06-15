@@ -4,9 +4,9 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{
+    Error, GenericArgument, ItemFn, Path, PathArguments, ReturnType, Token, Type,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
-    Error, GenericArgument, ItemFn, Path, PathArguments, ReturnType, Token, Type,
 };
 
 // ---------------------------------------------------------------------------
@@ -222,13 +222,13 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
     let args = syn::parse_macro_input!(args as LoaderArgs);
     let func = syn::parse_macro_input!(input as ItemFn);
 
-    match expand_inner(args, func) {
+    match expand_inner(&args, &func) {
         Ok(ts) => ts.into(),
         Err(e) => e.to_compile_error().into(),
     }
 }
 
-fn expand_inner(args: LoaderArgs, func: ItemFn) -> syn::Result<TokenStream2> {
+fn expand_inner(args: &LoaderArgs, func: &ItemFn) -> syn::Result<TokenStream2> {
     // Validate: function must have at least one generic type parameter
     if func.sig.generics.type_params().next().is_none() {
         return Err(Error::new_spanned(
@@ -255,10 +255,10 @@ fn expand_inner(args: LoaderArgs, func: ItemFn) -> syn::Result<TokenStream2> {
     let (impl_generics, _, where_clause) = generics.split_for_impl();
 
     // Spec struct name: {fn_name}_Spec
-    let spec_name = syn::Ident::new(&format!("{}_Spec", fn_name), fn_name.span());
+    let spec_name = syn::Ident::new(&format!("{fn_name}_Spec"), fn_name.span());
 
     // Composite requires trait name: __{fn_name}_Requires
-    let requires_trait_name = syn::Ident::new(&format!("__{}_Requires", fn_name), fn_name.span());
+    let requires_trait_name = syn::Ident::new(&format!("__{fn_name}_Requires"), fn_name.span());
 
     // Build the supertraits for the composite requires trait
     let requires_supertraits: TokenStream2 = if requires.is_empty() {

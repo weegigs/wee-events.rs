@@ -2,10 +2,7 @@ error[E0576]: cannot find method or associated constant `bind` in trait `wee_eve
   --> tests/ui/attach_to_definition_bind_bypass.rs:57:85
    |
 57 |       let binding = <CounterService as wee_events_restate::RestateServiceDefinition>::bind(Env, Env);
-   |                                                                                       ^^^^
-   |                                                                                       |
-   |                                                                                       not found in `wee_events_restate::RestateServiceDefinition`
-   |                                                                                       help: maybe you meant this associated function: `register`
+   |                                                                                       ^^^^ not found in `wee_events_restate::RestateServiceDefinition`
    |
   ::: src/lib.rs
    |
@@ -14,3 +11,9 @@ error[E0576]: cannot find method or associated constant `bind` in trait `wee_eve
    | |         services: Services,
    | |     ) -> Self::Registration<Store, Services>;
    | |_____________________________________________- associated function `register` defined here
+   |
+help: maybe you meant this associated function
+   |
+57 -     let binding = <CounterService as wee_events_restate::RestateServiceDefinition>::bind(Env, Env);
+57 +     let binding = <CounterService as wee_events_restate::RestateServiceDefinition>::register(Env, Env);
+   |

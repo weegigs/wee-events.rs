@@ -10,6 +10,7 @@ use wee_events::{AggregateId, CommandName};
 ///
 /// Format: `<aggregate_id>-<command_name>-<ulid>`. ULID supplies a
 /// monotonic, opaque tail so repeat invocations don't collide.
+#[must_use]
 pub fn correlation_id(id: &AggregateId, command: &CommandName) -> String {
     format!("{}-{}-{}", id, command.as_str(), ulid::Ulid::new())
 }

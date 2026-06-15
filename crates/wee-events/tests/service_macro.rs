@@ -1,11 +1,13 @@
 //! Tests for the rewritten `service!` macro.
 
-#![allow(dead_code)]
 //!
 //! Handlers and loaders are annotated with `#[handler]`/`#[loader]` and are
 //! generic over a context type `R`. The `service!` macro consumes bare function
 //! names and derives the command types and capability requirements from the
 //! companion `HandlerSpec`/`LoaderSpec` items.
+
+// handler/loader bodies are async by macro contract; they need not await
+#![allow(clippy::unused_async)]
 
 use wee_events::{AggregateId, Command, Entity, Handles, Revision, TypedService};
 
@@ -121,7 +123,7 @@ wee_events::service! {
 struct AppCtx;
 
 impl HasStore for AppCtx {
-    fn store_info(&self) -> &str {
+    fn store_info(&self) -> &'static str {
         "in-memory"
     }
 }
@@ -157,7 +159,10 @@ fn build_service() -> __wee_events_counter_service_core::Service<AppCtx, AppCtx>
 async fn create_service_executes_handler() {
     let service = build_service();
     let id: AggregateId = "counter:c1".parse().unwrap();
-    let entity = service.execute(&id, Increment { amount: 3 }).await.unwrap();
+    let entity = service
+        .execute(id.clone(), Increment { amount: 3 })
+        .await
+        .unwrap();
     // amount 3 + bonus 5 = 8
     assert_eq!(entity.state.value, 8);
 }
@@ -166,7 +171,7 @@ async fn create_service_executes_handler() {
 async fn create_service_loads() {
     let service = build_service();
     let id: AggregateId = "counter:c1".parse().unwrap();
-    let entity = service.load(&id).await.unwrap();
+    let entity = service.load(id.clone()).await.unwrap();
     assert_eq!(entity.state.value, 0);
 }
 
@@ -175,10 +180,13 @@ async fn create_service_handles_multiple_commands() {
     let service = build_service();
     let id: AggregateId = "counter:c1".parse().unwrap();
     // increment: 3 + 5 = 8
-    let entity = service.execute(&id, Increment { amount: 3 }).await.unwrap();
+    let entity = service
+        .execute(id.clone(), Increment { amount: 3 })
+        .await
+        .unwrap();
     assert_eq!(entity.state.value, 8);
     // adjust is a no-op (returns entity unchanged)
-    let entity = service.execute(&id, Adjust).await.unwrap();
+    let entity = service.execute(id.clone(), Adjust).await.unwrap();
     assert_eq!(entity.state.value, 0); // loader always returns default state
 }
 
@@ -186,7 +194,7 @@ async fn create_service_handles_multiple_commands() {
 async fn create_service_reloads_after_void_handler() {
     let service = build_service();
     let id: AggregateId = "counter:c1".parse().unwrap();
-    let entity = service.execute(&id, Touch).await.unwrap();
+    let entity = service.execute(id.clone(), Touch).await.unwrap();
     assert_eq!(entity.state.value, 0);
 }
 
@@ -200,10 +208,10 @@ where
     <T as wee_events::__private::DispatchCommand<Adjust>>::Error: Into<wee_events::Error>,
 {
     let _ = svc
-        .execute(id, Increment { amount: 1 })
+        .execute(id.clone(), Increment { amount: 1 })
         .await
         .map_err(Into::into)?;
-    svc.execute(id, Adjust).await.map_err(Into::into)
+    svc.execute(id.clone(), Adjust).await.map_err(Into::into)
 }
 
 #[tokio::test]

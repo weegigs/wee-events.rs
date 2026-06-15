@@ -1,7 +1,8 @@
+#![cfg(feature = "cbor")]
+
 use serde::{Deserialize, Serialize};
 use wee_events::{
-    AggregateId, CborDecoder, CborEncoder, DomainEvent, Entity, EventDecoders, EventEncoder,
-    EventStore as _, JsonDecoder, JsonEncoder, Publisher, Revision,
+    AggregateId, DomainEvent, Encoding, Entity, EventStore as _, Publisher, Revision,
 };
 use wee_events_sqlite::{GlobalStrategy, SqliteEventStore};
 
@@ -24,13 +25,10 @@ fn entity() -> Entity<Counter> {
 
 #[tokio::test]
 async fn sqlite_writer_encodes_typed_published_events_as_cbor() {
-    let store = SqliteEventStore::builder()
-        .in_memory()
-        .strategy(GlobalStrategy)
-        .writer(CborEncoder)
-        .open()
+    let store = SqliteEventStore::open_in_memory(GlobalStrategy)
         .await
-        .expect("store should open");
+        .expect("store should open")
+        .with_encoding(Encoding::Cbor);
 
     Publisher::new(&store)
         .publish(&entity(), vec![CounterEvent::Incremented { amount: 5 }])
@@ -43,11 +41,12 @@ async fn sqlite_writer_encodes_typed_published_events_as_cbor() {
         .expect("load should work");
     let recorded = &aggregate.events()[0];
 
-    assert_eq!(recorded.data.encoding, CborEncoder::ENCODING);
+    assert_eq!(recorded.data.encoding, Encoding::Cbor);
 
-    let decoders = EventDecoders::new().with(JsonDecoder).with(CborDecoder);
-    let decoded: CounterEvent = decoders
-        .deserialize(&recorded.data)
+    let decoded: CounterEvent = recorded
+        .data
+        .encoding
+        .decode(&recorded.data)
         .expect("consumer decoder should decode cbor");
 
     assert!(matches!(decoded, CounterEvent::Incremented { amount: 5 }));
@@ -55,11 +54,7 @@ async fn sqlite_writer_encodes_typed_published_events_as_cbor() {
 
 #[tokio::test]
 async fn sqlite_writer_can_remain_json_for_compatibility() {
-    let store = SqliteEventStore::builder()
-        .in_memory()
-        .strategy(GlobalStrategy)
-        .writer(JsonEncoder)
-        .open()
+    let store = SqliteEventStore::open_in_memory(GlobalStrategy)
         .await
         .expect("store should open");
 
@@ -72,8 +67,5 @@ async fn sqlite_writer_can_remain_json_for_compatibility() {
         .load(&AggregateId::new("counter", "codec"))
         .await
         .expect("load should work");
-    assert_eq!(
-        aggregate.events()[0].data.encoding,
-        wee_events::EventData::JSON_ENCODING
-    );
+    assert_eq!(aggregate.events()[0].data.encoding, Encoding::Json);
 }

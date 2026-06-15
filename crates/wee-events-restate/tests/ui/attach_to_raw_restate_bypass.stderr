@@ -1,12 +1,12 @@
-error[E0599]: no function or associated item named `restate` found for struct `CounterService` in the current scope
+error[E0599]: no associated function or constant named `restate` found for struct `CounterService` in the current scope
   --> tests/ui/attach_to_raw_restate_bypass.rs:58:31
    |
 43 | / wee_events::service! {
 44 | |     CounterService("counter") for Counter {
-   | |__________________- function or associated item `restate` not found for this struct
+   | |__________________- associated function or constant `restate` not found for this struct
 ...
 58 |           .bind(CounterService::restate(Env).serve())
-   |                                 ^^^^^^^ function or associated item not found in `CounterService`
+   |                                 ^^^^^^^ associated function or constant not found in `CounterService`
    |
 help: there is an associated function `restate_client` with a similar name
    |

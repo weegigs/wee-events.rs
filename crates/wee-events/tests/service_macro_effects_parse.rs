@@ -1,7 +1,8 @@
 //! Verifies that `service!` accepts an optional `effects:` block with
 //! all three filter forms.
 
-#![allow(dead_code)]
+// handler/loader bodies are async by macro contract; they need not await
+#![allow(clippy::unused_async)]
 
 use wee_events::{AggregateId, Command, Entity, Revision};
 

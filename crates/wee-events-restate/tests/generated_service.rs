@@ -71,9 +71,9 @@ fn generated_client_has_typed_methods() {
 
     // Verify load and execute return futures. We use `_` to drop them without
     // awaiting since there is no Restate server in tests.
-    let _load_fut = client.load(&id);
-    let _inc_fut = client.execute(&id, Increment { amount: 1 });
-    let _adj_fut = client.execute(&id, Adjust);
+    let _load_fut = client.load(id.clone());
+    let _inc_fut = client.execute(id.clone(), Increment { amount: 1 });
+    let _adj_fut = client.execute(id.clone(), Adjust);
 }
 
 /// Verify that `RestateClient<CounterService>` satisfies `TypedService<Counter>`.

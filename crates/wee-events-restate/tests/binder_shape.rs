@@ -3,7 +3,8 @@
 //! We don't hit the wire -- compilation of the builder chain is the
 //! assertion.
 
-#![allow(dead_code)]
+// handler/loader bodies are async by macro contract; they need not await
+#![allow(clippy::unused_async)]
 
 use wee_events::{AggregateId, Command, Entity, Revision};
 

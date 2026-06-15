@@ -75,11 +75,7 @@ impl SharedStores {
             "wee-events-sqlite-documents-{}.db",
             ulid::Ulid::new()
         ));
-        let event_store = SqliteEventStore::builder()
-            .local(&event_db_path)
-            .strategy(GlobalStrategy)
-            .writer(wee_events::JsonEncoder)
-            .open()
+        let event_store = SqliteEventStore::open_local(&event_db_path, GlobalStrategy)
             .await
             .unwrap();
         let document_store = DocumentStore::open(&document_db_path).await.unwrap();
@@ -128,7 +124,7 @@ async fn table_exists(db_path: &Path, table_name: &str) -> bool {
 #[tokio::test]
 async fn upsert_and_get_round_trip() {
     let store = test_document_store().await;
-    let revision = Revision::new("01AAAAAAAAAAAAAAAAAAAAAAAAA");
+    let revision = Revision::try_from("01AAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
     let data = serde_json::json!({"name": "test", "value": 42});
 
     let rows = store
@@ -146,8 +142,8 @@ async fn upsert_and_get_round_trip() {
 #[tokio::test]
 async fn upsert_overwrites_with_newer_revision() {
     let store = test_document_store().await;
-    let rev1 = Revision::new("01AAAAAAAAAAAAAAAAAAAAAAAAA");
-    let rev2 = Revision::new("01BBBBBBBBBBBBBBBBBBBBBBBBB");
+    let rev1 = Revision::try_from("01AAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
+    let rev2 = Revision::try_from("01BBBBBBBBBBBBBBBBBBBBBBBB").unwrap();
     let data1 = serde_json::json!({"version": 1});
     let data2 = serde_json::json!({"version": 2});
 
@@ -170,8 +166,8 @@ async fn upsert_overwrites_with_newer_revision() {
 #[tokio::test]
 async fn upsert_ignores_stale_revision() {
     let store = test_document_store().await;
-    let rev_newer = Revision::new("01BBBBBBBBBBBBBBBBBBBBBBBBB");
-    let rev_older = Revision::new("01AAAAAAAAAAAAAAAAAAAAAAAAA");
+    let rev_newer = Revision::try_from("01BBBBBBBBBBBBBBBBBBBBBBBB").unwrap();
+    let rev_older = Revision::try_from("01AAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
     let data_current = serde_json::json!({"version": "current"});
     let data_stale = serde_json::json!({"version": "stale"});
 
@@ -193,7 +189,7 @@ async fn upsert_ignores_stale_revision() {
 #[tokio::test]
 async fn upsert_with_equal_revision_is_idempotent() {
     let store = test_document_store().await;
-    let rev = Revision::new("01AAAAAAAAAAAAAAAAAAAAAAAAA");
+    let rev = Revision::try_from("01AAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
     let data_original = serde_json::json!({"version": "original"});
     let data_different = serde_json::json!({"version": "different"});
 
@@ -222,7 +218,7 @@ async fn get_returns_none_for_missing() {
 #[tokio::test]
 async fn list_returns_all_in_collection() {
     let store = test_document_store().await;
-    let rev = Revision::new("01AAAAAAAAAAAAAAAAAAAAAAAAA");
+    let rev = Revision::try_from("01AAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
 
     store
         .upsert("campaigns", "c1", &rev, &serde_json::json!({"id": "c1"}))
@@ -247,7 +243,7 @@ async fn list_returns_all_in_collection() {
 #[tokio::test]
 async fn delete_removes_document() {
     let store = test_document_store().await;
-    let rev = Revision::new("01AAAAAAAAAAAAAAAAAAAAAAAAA");
+    let rev = Revision::try_from("01AAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
     let data = serde_json::json!({"name": "delete me"});
 
     store.upsert("campaigns", "c1", &rev, &data).await.unwrap();
@@ -269,7 +265,7 @@ async fn delete_returns_false_for_missing() {
 #[tokio::test]
 async fn collections_are_isolated() {
     let store = test_document_store().await;
-    let rev = Revision::new("01AAAAAAAAAAAAAAAAAAAAAAAAA");
+    let rev = Revision::try_from("01AAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
 
     store
         .upsert(
@@ -300,7 +296,7 @@ async fn collections_are_isolated() {
 #[tokio::test]
 async fn json_valid_constraint_accepts_valid_json() {
     let store = test_document_store().await;
-    let rev = Revision::new("01AAAAAAAAAAAAAAAAAAAAAAAAA");
+    let rev = Revision::try_from("01AAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
 
     store
         .upsert("test", "valid", &rev, &serde_json::json!({"ok": true}))
@@ -317,11 +313,7 @@ async fn event_store_open_only_creates_event_schema() {
         "wee-events-sqlite-events-only-{}.db",
         ulid::Ulid::new()
     ));
-    let _store = SqliteEventStore::builder()
-        .local(&db_path)
-        .strategy(GlobalStrategy)
-        .writer(wee_events::JsonEncoder)
-        .open()
+    let _store = SqliteEventStore::open_local(&db_path, GlobalStrategy)
         .await
         .unwrap();
 
@@ -374,11 +366,7 @@ where
     S: LocalPartitionStrategy + LocalStorePath,
 {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = SqliteEventStore::builder()
-        .local(S::local_store_path(&temp_dir))
-        .strategy(strategy)
-        .writer(wee_events::JsonEncoder)
-        .open()
+    let store = SqliteEventStore::open_local(S::local_store_path(&temp_dir), strategy)
         .await
         .unwrap();
 
@@ -407,11 +395,7 @@ where
     S: LocalPartitionStrategy + LocalStorePath,
 {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = SqliteEventStore::builder()
-        .local(S::local_store_path(&temp_dir))
-        .strategy(strategy)
-        .writer(wee_events::JsonEncoder)
-        .open()
+    let store = SqliteEventStore::open_local(S::local_store_path(&temp_dir), strategy)
         .await
         .unwrap();
 
@@ -453,7 +437,7 @@ fn reduce_incremented(
     state: &mut CounterState,
     _event_type: &EventType,
     data: &EventData,
-) -> Result<(), wee_events::DeserializeJsonError> {
+) -> Result<(), wee_events::DecodeError> {
     #[derive(Deserialize)]
     struct Payload {
         amount: i64,
@@ -469,7 +453,7 @@ fn reduce_decremented(
     state: &mut CounterState,
     _event_type: &EventType,
     data: &EventData,
-) -> Result<(), wee_events::DeserializeJsonError> {
+) -> Result<(), wee_events::DecodeError> {
     #[derive(Deserialize)]
     struct Payload {
         amount: i64,

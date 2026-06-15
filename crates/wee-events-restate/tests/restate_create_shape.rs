@@ -31,27 +31,8 @@ impl CounterStore for FixedStore {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum FixedStoreError {
-    #[error(transparent)]
-    WeeEvents(#[from] wee_events::Error),
-    #[error(transparent)]
-    Serialization(#[from] serde_json::Error),
-}
-
-impl wee_events::EventStoreErrorExt for FixedStoreError {
-    fn as_wee_events(&self) -> Option<&wee_events::Error> {
-        match self {
-            FixedStoreError::WeeEvents(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
 impl EventStore for FixedStore {
-    type Error = FixedStoreError;
-
-    async fn load(&self, id: &AggregateId) -> Result<Aggregate, FixedStoreError> {
+    async fn load(&self, id: &AggregateId) -> Result<Aggregate, wee_events::Error> {
         Ok(Aggregate::empty(id.clone()))
     }
 
@@ -60,7 +41,7 @@ impl EventStore for FixedStore {
         aggregate_id: &AggregateId,
         _options: PublishOptions,
         _events: Vec<RawEvent>,
-    ) -> Result<ChangeSet, FixedStoreError> {
+    ) -> Result<ChangeSet, wee_events::Error> {
         Ok(ChangeSet {
             aggregate_id: aggregate_id.clone(),
             revision: Revision::zero(),
@@ -69,13 +50,9 @@ impl EventStore for FixedStore {
     }
 }
 
-static JSON_ENCODER: wee_events::JsonEncoder = wee_events::JsonEncoder;
-
 impl wee_events::EncodesEvents for FixedStore {
-    type Encoder = wee_events::JsonEncoder;
-
-    fn event_encoder(&self) -> &Self::Encoder {
-        &JSON_ENCODER
+    fn encoding(&self) -> wee_events::Encoding {
+        wee_events::Encoding::Json
     }
 }
 

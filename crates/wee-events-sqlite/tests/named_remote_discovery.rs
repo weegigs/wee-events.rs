@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use wee_events::{AggregateId, EventData, EventStore as _, PublishOptions, RawEvent};
+use wee_events::{AggregateId, Encoding, EventData, EventStore as _, PublishOptions, RawEvent};
 use wee_events_sqlite::{
     DatabaseTarget, Error, NamedTargetProvisioner, PartitionByStrategy, PartitionName,
     SqldNamespacedProvisioner, SqliteEventStore, TypeStrategy,
@@ -134,15 +134,12 @@ async fn enumerate_after_restart_uses_logical_partition_name_not_backend_name() 
     let provisioner = SuffixedLocalProvisioner::new(temp_dir.path());
     let aggregate_id = AggregateId::new("invoice", "tenant/acme:123");
 
-    let store = SqliteEventStore::builder()
-        .sqld_namespaced(provisioner.clone())
-        .strategy(PartitionByStrategy::new(
-            partition_by_tenant as fn(&AggregateId) -> String,
-        ))
-        .writer(wee_events::JsonEncoder)
-        .open()
-        .await
-        .expect("store should open");
+    let store = SqliteEventStore::open_sqld_namespaced(
+        provisioner.clone(),
+        PartitionByStrategy::new(partition_by_tenant as fn(&AggregateId) -> String),
+    )
+    .await
+    .expect("store should open");
 
     store
         .publish(
@@ -150,7 +147,7 @@ async fn enumerate_after_restart_uses_logical_partition_name_not_backend_name() 
             PublishOptions::default(),
             vec![RawEvent {
                 event_type: "invoice-created".into(),
-                data: EventData::raw("json", b"{}".to_vec()),
+                data: EventData::raw(Encoding::Json, b"{}".to_vec()),
             }],
         )
         .await
@@ -158,15 +155,12 @@ async fn enumerate_after_restart_uses_logical_partition_name_not_backend_name() 
 
     drop(store);
 
-    let reopened = SqliteEventStore::builder()
-        .sqld_namespaced(provisioner)
-        .strategy(PartitionByStrategy::new(
-            partition_by_tenant as fn(&AggregateId) -> String,
-        ))
-        .writer(wee_events::JsonEncoder)
-        .open()
-        .await
-        .expect("store should reopen");
+    let reopened = SqliteEventStore::open_sqld_namespaced(
+        provisioner,
+        PartitionByStrategy::new(partition_by_tenant as fn(&AggregateId) -> String),
+    )
+    .await
+    .expect("store should reopen");
 
     let ids = reopened
         .enumerate_aggregates()
@@ -183,11 +177,7 @@ async fn rejects_distinct_logical_partitions_that_alias_to_the_same_target() {
     let first = AggregateId::new("tenant/acme", "123");
     let second = AggregateId::new("tenant:acme", "456");
 
-    let store = SqliteEventStore::builder()
-        .sqld_namespaced(provisioner)
-        .strategy(TypeStrategy)
-        .writer(wee_events::JsonEncoder)
-        .open()
+    let store = SqliteEventStore::open_sqld_namespaced(provisioner, TypeStrategy)
         .await
         .expect("store should open");
 
@@ -197,7 +187,7 @@ async fn rejects_distinct_logical_partitions_that_alias_to_the_same_target() {
             PublishOptions::default(),
             vec![RawEvent {
                 event_type: "created".into(),
-                data: EventData::raw("json", b"{}".to_vec()),
+                data: EventData::raw(Encoding::Json, b"{}".to_vec()),
             }],
         )
         .await
@@ -209,7 +199,7 @@ async fn rejects_distinct_logical_partitions_that_alias_to_the_same_target() {
             PublishOptions::default(),
             vec![RawEvent {
                 event_type: "created".into(),
-                data: EventData::raw("json", b"{}".to_vec()),
+                data: EventData::raw(Encoding::Json, b"{}".to_vec()),
             }],
         )
         .await

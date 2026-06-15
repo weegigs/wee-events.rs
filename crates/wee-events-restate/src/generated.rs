@@ -35,12 +35,11 @@ async fn parse_error_response(resp: reqwest::Response) -> Error {
     if let Ok(rejection) = serde_json::from_str::<Rejection>(&text) {
         return Error::Rejection(rejection);
     }
-    if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&text) {
-        if let Some(message) = envelope.get("message").and_then(|m| m.as_str()) {
-            if let Ok(rejection) = serde_json::from_str::<Rejection>(message) {
-                return Error::Rejection(rejection);
-            }
-        }
+    if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&text)
+        && let Some(message) = envelope.get("message").and_then(|m| m.as_str())
+        && let Ok(rejection) = serde_json::from_str::<Rejection>(message)
+    {
+        return Error::Rejection(rejection);
     }
     Error::Backend(text)
 }
@@ -56,7 +55,7 @@ where
     S: serde::de::DeserializeOwned,
 {
     let loader = names::loader_name(service_name);
-    let url = format!("{}/{}/load", ingress_url, loader);
+    let url = format!("{ingress_url}/{loader}/load");
 
     let resp = http.post(&url).json(&id).send().await?;
 
@@ -97,7 +96,7 @@ where
         },
     };
 
-    let url = format!("{}/{}/{}/run", ingress_url, executor, correlation_id);
+    let url = format!("{ingress_url}/{executor}/{correlation_id}/run");
 
     let resp = http.post(&url).json(&request).send().await?;
 

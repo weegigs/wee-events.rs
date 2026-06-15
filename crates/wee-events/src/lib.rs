@@ -22,23 +22,27 @@ mod test_suite;
 
 pub use aggregate::Aggregate;
 pub use codec::{
-    CborDecoder, CborEncoder, CodecError, DecodeError, DecoderList, EncodeError, EncodesEvents,
-    EventDecoder, EventDecoders, EventEncoder, JsonDecoder, JsonEncoder,
+    CodecError, DecodeError, EncodeError, EncodesEvents, Encoding, EventDecoder, EventEncoder,
 };
+pub mod encoding {
+    //! Per-encoding modules. Each exposes `Encoder`, `Decoder`, and an
+    //! `ENCODING` string constant. CBOR is feature-gated.
+    #[cfg(feature = "cbor")]
+    pub use crate::codec::cbor;
+    pub use crate::codec::json;
+}
 pub use command::Command;
 pub use create::{
-    create, InProcessServiceDefinition, ServiceCreateBuilder, ServiceCreateEnvBuilder,
-    ServiceCreateStoreBuilder,
+    InProcessServiceDefinition, ServiceCreateBuilder, ServiceCreateEnvBuilder,
+    ServiceCreateStoreBuilder, create,
 };
 pub use entity::Entity;
-pub use error::{Error, EventStoreErrorExt, RetryDiagnostics};
-pub use event::{
-    ChangeSet, DeserializeJsonError, DomainEvent, EventData, EventMetadata, RecordedEvent,
-};
+pub use error::{Error, RetryDiagnostics, RetryExhausted};
+pub use event::{ChangeSet, DomainEvent, EventData, EventMetadata, RecordedEvent};
 pub use handler_env::HandlerEnv;
 pub use id::{
     AggregateId, AggregateIdParseError, AggregateType, CommandName, CorrelationId, EventId,
-    EventType, Revision,
+    EventType, Revision, RevisionParseError,
 };
 pub use publisher::{HasPublisher, Publisher};
 pub use renderer::{EventPattern, EventPatternError, ReduceFn, RenderError, Renderer};
@@ -54,10 +58,10 @@ pub use service_builder::{FactoryBridge, HandleCommand, HandlerBridge, HandlerLi
 pub use service_builder::{HandlerOutcome, IntoHandlerOutcome};
 pub use spec::{HandlerRuntimeSpec, HandlerSpec, LoaderRuntimeSpec, LoaderSpec};
 pub use store::{EventStore, PublishOptions, RawEvent};
-pub use wee_events_macros::{capability, handler, loader, service, Command, DomainEvent};
+pub use wee_events_macros::{Command, DomainEvent, capability, handler, loader, service};
 
 pub mod memory {
-    pub use crate::memory_store::{MemoryStore, MemoryStoreBacking, MemoryStoreError};
+    pub use crate::memory_store::MemoryStore;
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -77,6 +81,6 @@ pub fn to_raw_event<E: DomainEvent + serde::Serialize>(
 ) -> std::result::Result<RawEvent, EncodeError> {
     Ok(RawEvent {
         event_type: event.event_type(),
-        data: JsonEncoder.serialize(event)?,
+        data: Encoding::Json.encode(event)?,
     })
 }

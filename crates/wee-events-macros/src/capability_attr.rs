@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_quote, Error, FnArg, ItemTrait, ReturnType, TraitItem, TraitItemFn, Type};
+use syn::{Error, FnArg, ItemTrait, ReturnType, TraitItem, TraitItemFn, Type, parse_quote};
 
 pub fn expand(_args: TokenStream, input: TokenStream) -> TokenStream {
     let item = syn::parse_macro_input!(input as ItemTrait);

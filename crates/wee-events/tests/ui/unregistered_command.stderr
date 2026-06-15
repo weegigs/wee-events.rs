@@ -1,18 +1,57 @@
-error[E0308]: mismatched types
-  --> tests/ui/unregistered_command.rs:80:34
+error[E0053]: method `dispatch_command` has an incompatible type for trait
+  --> tests/ui/unregistered_command.rs:38:13
    |
-80 |     let _ = service.execute(&id, Unsupported);
-   |                     -------      ^^^^^^^^^^^ expected `Increment`, found `Unsupported`
+38 |         id: &AggregateId,
+   |             ^^^^^^^^^^^^ expected `AggregateId`, found `&AggregateId`
+39 |         _cmd: Increment,
+40 |     ) -> impl Future<Output = wee_events::Result<Entity<Counter>>> + Send {
+   |          ----------------------------------------------------------------
+   |          |
+   |          the expected future
+   |          the found future
+   |
+   = note: expected signature `fn(&TestService, AggregateId, Increment) -> impl Future<Output = Result<Entity<Counter>, wee_events::Error>> + Send`
+              found signature `fn(&TestService, &AggregateId, Increment) -> impl Future<Output = Result<Entity<Counter>, wee_events::Error>> + Send`
+help: change the parameter type to match the trait
+   |
+38 -         id: &AggregateId,
+38 +         id: AggregateId,
+   |
+
+error[E0053]: method `load` has an incompatible type for trait
+  --> tests/ui/unregistered_command.rs:59:13
+   |
+59 |         id: &AggregateId,
+   |             ^^^^^^^^^^^^ expected `AggregateId`, found `&AggregateId`
+60 |     ) -> impl Future<Output = wee_events::Result<Entity<Counter>>> + Send {
+   |          ----------------------------------------------------------------
+   |          |
+   |          the expected future
+   |          the found future
+   |
+   = note: expected signature `fn(&TestService, AggregateId) -> impl Future<Output = Result<Entity<Counter>, wee_events::Error>> + Send`
+              found signature `fn(&TestService, &AggregateId) -> impl Future<Output = Result<Entity<Counter>, wee_events::Error>> + Send`
+help: change the parameter type to match the trait
+   |
+59 -         id: &AggregateId,
+59 +         id: AggregateId,
+   |
+
+error[E0308]: mismatched types
+  --> tests/ui/unregistered_command.rs:80:41
+   |
+80 |     let _ = service.execute(id.clone(), Unsupported);
+   |                     -------             ^^^^^^^^^^^ expected `Increment`, found `Unsupported`
    |                     |
    |                     arguments to this method are incorrect
    |
 help: the return type of this call is `Unsupported` due to the type of the argument passed
   --> tests/ui/unregistered_command.rs:80:13
    |
-80 |     let _ = service.execute(&id, Unsupported);
-   |             ^^^^^^^^^^^^^^^^^^^^^-----------^
-   |                                  |
-   |                                  this argument influences the return type of `execute`
+80 |     let _ = service.execute(id.clone(), Unsupported);
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^-----------^
+   |                                         |
+   |                                         this argument influences the return type of `execute`
 note: method defined here
   --> src/service.rs
    |

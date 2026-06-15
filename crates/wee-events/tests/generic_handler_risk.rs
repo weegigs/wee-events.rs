@@ -1,4 +1,4 @@
-//! Compilation risk verification: generic-R handlers with ServiceBuilder.
+//! Compilation risk verification: generic-R handlers with `ServiceBuilder`.
 //!
 //! Verifies that `ServiceBuilder::with_handler::<C, _>(generic_fn::<R>)` compiles
 //! when called from inside a function that is itself generic over `R: SomeTrait`.
@@ -88,7 +88,7 @@ where
         .with_handler::<Increment, _>(increment::<R>)
         .build(factory);
 
-    service.execute(&id, Increment { amount: 7 }).await
+    service.execute(id.clone(), Increment { amount: 7 }).await
 }
 
 async fn build_and_load<R, F, Fut>(
@@ -105,7 +105,7 @@ where
         .with_handler::<Increment, _>(increment::<R>)
         .build(factory);
 
-    service.load(&id).await
+    service.load(id.clone()).await
 }
 
 // ---------------------------------------------------------------------------

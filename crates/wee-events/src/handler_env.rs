@@ -1,4 +1,4 @@
-use crate::{ChangeSet, EncodesEvents, EventStore, Publisher};
+use crate::{EncodesEvents, EventStore, Publisher};
 
 /// Core service execution environment passed to typed handlers.
 ///
@@ -33,29 +33,5 @@ where
 
     fn publisher(&self) -> Publisher<'_, Self::Store> {
         Publisher::new(self.store())
-    }
-}
-
-impl<Store, Services> EventStore for HandlerEnv<Store, Services>
-where
-    Store: EventStore,
-    Services: Send + Sync,
-{
-    type Error = Store::Error;
-
-    fn load(
-        &self,
-        id: &crate::AggregateId,
-    ) -> impl std::future::Future<Output = Result<crate::Aggregate, Self::Error>> + Send {
-        self.store.load(id)
-    }
-
-    fn publish(
-        &self,
-        aggregate_id: &crate::AggregateId,
-        options: crate::PublishOptions,
-        events: Vec<crate::RawEvent>,
-    ) -> impl std::future::Future<Output = Result<ChangeSet, Self::Error>> + Send {
-        self.store.publish(aggregate_id, options, events)
     }
 }

@@ -6,11 +6,8 @@ mod strategies;
 pub(crate) mod turso_platform;
 mod types;
 
-pub type SqliteEventStore<
-    S = strategies::GlobalStrategy,
-    C = backends::LocalPartitionCatalog<strategies::GlobalStrategy>,
-    W = wee_events::JsonEncoder,
-> = store::EventStore<S, C, W>;
+pub type SqliteEventStore<S = strategies::GlobalStrategy, C = backends::LocalPartitionCatalog<S>> =
+    store::EventStore<S, C>;
 pub use store::{InMemoryStore, LocalStore, NamedRemoteStore, RemoteStore, SingleRemoteStore};
 pub use strategies::{
     AggregatePartition, AggregateStrategy, BucketPartition, GlobalPartition, GlobalStrategy,

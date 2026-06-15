@@ -2,10 +2,9 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{
-    braced, bracketed,
+    Ident, LitStr, Path, Token, Visibility, braced, bracketed,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
-    Ident, LitStr, Path, Token, Visibility,
 };
 
 // ---------------------------------------------------------------------------
@@ -117,7 +116,7 @@ impl LoaderEntry {
 
 /// The two forms accepted by `service!`:
 ///
-/// - **DefinitionOnly**: `pub Name("logical") for State [Cmd, ...]`
+/// - **`DefinitionOnly`**: `pub Name("logical") for State [Cmd, ...]`
 ///   Emits only `ServiceDefinition` + `HasCommand<C>` impls.
 ///
 /// - **Full**: `pub Name for State { loader: .., handlers: [..] }`
@@ -380,8 +379,7 @@ fn generate_full(service: FullServiceInput) -> TokenStream2 {
     let loader_wire_name = loader_entry
         .wire_name
         .as_ref()
-        .map(|l| l.value())
-        .unwrap_or_else(|| "load".to_string());
+        .map_or_else(|| "load".to_string(), syn::LitStr::value);
 
     // Effective Restate method name for each handler, in input order.
     let handler_wire_names: Vec<String> = handler_entries
@@ -534,7 +532,6 @@ fn generate_full(service: FullServiceInput) -> TokenStream2 {
                         ::std::convert::From<
                             <#loader_spec_path as ::wee_events::LoaderRuntimeSpec<__Store>>::Error,
                         >
-                        + ::std::convert::From<::wee_events::Error>
                         + ::std::marker::Send
                         + ::std::marker::Sync
                         + 'static,
@@ -546,7 +543,7 @@ fn generate_full(service: FullServiceInput) -> TokenStream2 {
 
                     fn dispatch_command(
                         &self,
-                        id: &::wee_events::AggregateId,
+                        id: ::wee_events::AggregateId,
                         cmd: <#sp as ::wee_events::HandlerSpec>::Command,
                     ) -> impl ::std::future::Future<
                         Output = ::std::result::Result<
@@ -556,7 +553,6 @@ fn generate_full(service: FullServiceInput) -> TokenStream2 {
                     > + ::std::marker::Send {
                         let store = self.store.clone();
                         let services = self.services.clone();
-                        let id = id.clone();
                         async move {
                             let entity =
                                 <#loader_spec_path as ::wee_events::LoaderRuntimeSpec<__Store>>::load(
@@ -654,7 +650,7 @@ fn generate_full(service: FullServiceInput) -> TokenStream2 {
 
                 fn load(
                     &self,
-                    id: &::wee_events::AggregateId,
+                    id: ::wee_events::AggregateId,
                 ) -> impl ::std::future::Future<
                     Output = ::std::result::Result<
                         ::wee_events::Entity<#state_type>,
@@ -662,7 +658,6 @@ fn generate_full(service: FullServiceInput) -> TokenStream2 {
                     >,
                 > + ::std::marker::Send {
                     let store = self.store.clone();
-                    let id = id.clone();
                     async move {
                         <#loader_spec_path as ::wee_events::LoaderRuntimeSpec<__Store>>::load(
                             &store,

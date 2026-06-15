@@ -46,7 +46,7 @@ pub trait PartitionStrategy: Clone + Send + Sync + 'static {
     }
 
     fn partition_for_aggregate(&self, aggregate_id: &AggregateId)
-        -> Result<Self::Partition, Error>;
+    -> Result<Self::Partition, Error>;
 
     fn read_plan(&self, partition: &Self::Partition) -> PartitionRead;
 

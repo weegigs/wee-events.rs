@@ -77,5 +77,5 @@ fn main() {
     // Note: the compiler diagnostic says "mismatched types" (Increment vs Unsupported)
     // rather than "missing Handles impl" — this is a known RPIT inference artifact
     // where the compiler infers C from the only Handles impl, then rejects the mismatch.
-    let _ = service.execute(&id, Unsupported);
+    let _ = service.execute(id.clone(), Unsupported);
 }

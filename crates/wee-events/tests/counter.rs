@@ -3,9 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 use wee_events::{
-    memory::{MemoryStore, MemoryStoreError},
-    AggregateId, Command, DomainEvent, Entity, EventData, EventStore, EventStoreErrorExt,
-    EventType, PublishOptions, Renderer,
+    AggregateId, Command, DomainEvent, Entity, EventData, EventStore, EventType, PublishOptions,
+    Renderer, memory::MemoryStore,
 };
 
 // ---------------------------------------------------------------------------
@@ -50,7 +49,7 @@ fn reduce_incremented(
     state: &mut CounterState,
     _event_type: &EventType,
     data: &EventData,
-) -> Result<(), wee_events::DeserializeJsonError> {
+) -> Result<(), wee_events::DecodeError> {
     let event: CounterEvent = data.deserialize_json()?;
     if let CounterEvent::Incremented { amount } = event {
         state.value += amount;
@@ -63,7 +62,7 @@ fn reduce_decremented(
     state: &mut CounterState,
     _event_type: &EventType,
     data: &EventData,
-) -> Result<(), wee_events::DeserializeJsonError> {
+) -> Result<(), wee_events::DecodeError> {
     let event: CounterEvent = data.deserialize_json()?;
     if let CounterEvent::Decremented { amount } = event {
         state.value -= amount;
@@ -72,11 +71,12 @@ fn reduce_decremented(
     Ok(())
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn reduce_reset(
     state: &mut CounterState,
     _event_type: &EventType,
     _data: &EventData,
-) -> Result<(), wee_events::DeserializeJsonError> {
+) -> Result<(), wee_events::DecodeError> {
     state.value = 0;
     state.event_count += 1;
     Ok(())
@@ -98,7 +98,7 @@ async fn handle_command(
     aggregate_id: &AggregateId,
     entity: &Entity<CounterState>,
     command: CounterCommand,
-) -> Result<(), MemoryStoreError> {
+) -> Result<(), wee_events::Error> {
     let events: Vec<CounterEvent> = match command {
         CounterCommand::Increment { amount } => {
             vec![CounterEvent::Incremented { amount }]
@@ -136,11 +136,9 @@ async fn load_entity(
     store: &MemoryStore,
     renderer: &Renderer<CounterState>,
     id: &AggregateId,
-) -> Result<Entity<CounterState>, MemoryStoreError> {
+) -> Result<Entity<CounterState>, wee_events::Error> {
     let aggregate = store.load(id).await?;
-    renderer
-        .render(&aggregate)
-        .map_err(wee_events::RenderError::into_store_error)
+    Ok(renderer.render(aggregate)?)
 }
 
 // ---------------------------------------------------------------------------
@@ -294,8 +292,8 @@ async fn optimistic_concurrency_rejects_stale_revision() {
 
     assert!(result.is_err());
     let err = result.unwrap_err();
-    match err.as_wee_events() {
-        Some(wee_events::Error::RevisionConflict { .. }) => {}
+    match &err {
+        wee_events::Error::RevisionConflict { .. } => {}
         _ => panic!("expected RevisionConflict, got: {err}"),
     }
 }
@@ -368,10 +366,7 @@ async fn publisher_uses_store_event_encoder() {
         .await
         .expect("publish should succeed");
 
-    assert_eq!(
-        changes.events[0].data.encoding,
-        <wee_events::JsonEncoder as wee_events::EventEncoder>::ENCODING
-    );
+    assert_eq!(changes.events[0].data.encoding, wee_events::Encoding::Json);
 }
 
 #[tokio::test]

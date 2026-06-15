@@ -62,7 +62,7 @@ pub trait SingleTargetProvisioner: Send + Sync {
     ///
     /// This should avoid creating new storage as a side effect.
     fn existing_target(&self)
-        -> impl Future<Output = Result<Option<DatabaseTarget>, Error>> + Send;
+    -> impl Future<Output = Result<Option<DatabaseTarget>, Error>> + Send;
 }
 
 pub trait NamedTargetProvisioner: Send + Sync {

@@ -21,3 +21,6 @@ wee-events-macros = { path = "../wee-events-macros" }
 
 [dev-dependencies]
 trybuild = "1"
+
+[lints]
+workspace = true

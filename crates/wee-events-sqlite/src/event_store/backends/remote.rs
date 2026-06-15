@@ -1,7 +1,7 @@
 use futures_util::future::try_join_all;
 use libsql::Connection;
 
-use crate::{database, Error};
+use crate::{Error, database};
 
 use super::super::partitioning::PartitionCatalog;
 use super::super::strategies::{PartitionName, PartitionNamingStrategy};

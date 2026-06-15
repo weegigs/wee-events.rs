@@ -86,12 +86,11 @@ impl<D: ServiceDefinition> RestateClient<D> {
             if let Ok(rejection) = serde_json::from_str::<Rejection>(&text) {
                 return Err(Error::Rejection(rejection));
             }
-            if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(message) = envelope.get("message").and_then(|m| m.as_str()) {
-                    if let Ok(rejection) = serde_json::from_str::<Rejection>(message) {
-                        return Err(Error::Rejection(rejection));
-                    }
-                }
+            if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&text)
+                && let Some(message) = envelope.get("message").and_then(|m| m.as_str())
+                && let Ok(rejection) = serde_json::from_str::<Rejection>(message)
+            {
+                return Err(Error::Rejection(rejection));
             }
             return Err(Error::Backend(text));
         }
@@ -133,7 +132,7 @@ where
 {
     type Error = Error;
 
-    async fn dispatch_command(&self, id: &AggregateId, cmd: C) -> Result<Entity<D::State>, Error> {
+    async fn dispatch_command(&self, id: AggregateId, cmd: C) -> Result<Entity<D::State>, Error> {
         let http = self.http.clone();
         let url = self.ingress_url.clone();
         let value = serde_json::to_value(&cmd)?;
@@ -141,7 +140,7 @@ where
             &http,
             &url,
             D::SERVICE_NAME,
-            id.clone(),
+            id,
             C::NAME.into(),
             value,
         )
@@ -164,9 +163,9 @@ where
 {
     type Error = Error;
 
-    async fn load(&self, id: &AggregateId) -> Result<Entity<D::State>, Error> {
+    async fn load(&self, id: AggregateId) -> Result<Entity<D::State>, Error> {
         let http = self.http.clone();
         let url = self.ingress_url.clone();
-        crate::generated::load::<D::State>(&http, &url, D::SERVICE_NAME, id.clone()).await
+        crate::generated::load::<D::State>(&http, &url, D::SERVICE_NAME, id).await
     }
 }

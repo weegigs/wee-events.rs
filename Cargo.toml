@@ -1,23 +1,31 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/wee-events-macros",
-    "crates/wee-events",
-    "crates/wee-events-sqlite",
-    "crates/wee-events-restate",
-    "examples/restate-counter",
+  "crates/wee-events-macros",
+  "crates/wee-events",
+  "crates/wee-events-sqlite",
+  "crates/wee-events-restate",
 ]
+exclude = ["examples/coroutine-door"]
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 license = "MIT"
 version = "0.1.0"
-rust-version = "1.83"
+rust-version = "1.95" # 2026-04-14
 readme = "README.md"
 
 [workspace.dependencies]
 ciborium = "0.2"
-serde = { version = "1", features = ["derive"] }
+dashmap = "6"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+too_many_lines = "allow"

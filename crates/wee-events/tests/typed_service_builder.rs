@@ -19,7 +19,7 @@ struct Counter {
     value: i64,
 }
 
-/// Commands are plain structs with Serialize for the TypedService contract.
+/// Commands are plain structs with Serialize for the `TypedService` contract.
 #[derive(serde::Serialize)]
 struct Increment {
     amount: i64,
@@ -58,7 +58,7 @@ impl TestContext {
 // Shared error types
 // ---------------------------------------------------------------------------
 
-/// Loader error: plain wee_events structural errors.
+/// Loader error: plain `wee_events` structural errors.
 type LoaderErr = wee_events::Error;
 
 /// Handler error: richer service error that can carry domain rejections.
@@ -129,7 +129,7 @@ async fn load_returns_default_entity() {
         .build(|| async { Ok(TestContext::default()) });
 
     let id = AggregateId::new("counter", "test-1");
-    let entity = service.load(&id).await.unwrap();
+    let entity = service.load(id.clone()).await.unwrap();
 
     assert_eq!(entity.state.value, 0);
     assert_eq!(entity.aggregate_id, id);
@@ -144,7 +144,10 @@ async fn execute_dispatches_to_increment_handler() {
         .build(|| async { Ok(TestContext::default()) });
 
     let id = AggregateId::new("counter", "test-1");
-    let entity = service.execute(&id, Increment { amount: 5 }).await.unwrap();
+    let entity = service
+        .execute(id.clone(), Increment { amount: 5 })
+        .await
+        .unwrap();
 
     assert_eq!(entity.state.value, 5);
 }
@@ -162,19 +165,22 @@ async fn execute_dispatches_to_correct_handler_among_multiple() {
 
     // Increment handler is invoked and returns the updated value.
     let entity = service
-        .execute(&id, Increment { amount: 10 })
+        .execute(id.clone(), Increment { amount: 10 })
         .await
         .unwrap();
     assert_eq!(entity.state.value, 10);
 
     // Decrement handler is invoked.
     // The loader always returns default (value: 0), so we decrement by 0 to stay valid.
-    let entity = service.execute(&id, Decrement { amount: 0 }).await.unwrap();
+    let entity = service
+        .execute(id.clone(), Decrement { amount: 0 })
+        .await
+        .unwrap();
     assert_eq!(entity.state.value, 0);
 
     // Verify that Decrement's business rule fires correctly (0 - 1 → rejection).
     let err = service
-        .execute(&id, Decrement { amount: 1 })
+        .execute(id.clone(), Decrement { amount: 1 })
         .await
         .unwrap_err();
     assert!(
@@ -197,7 +203,7 @@ async fn execute_handler_rejection_propagates_as_error() {
     let id = AggregateId::new("counter", "test-1");
     // Decrement from 0 by 5 → BELOW_ZERO rejection
     let err = service
-        .execute(&id, Decrement { amount: 5 })
+        .execute(id.clone(), Decrement { amount: 5 })
         .await
         .unwrap_err();
 
@@ -228,13 +234,16 @@ async fn factory_called_once_per_operation() {
 
     let id = AggregateId::new("counter", "test-1");
 
-    service.load(&id).await.unwrap();
+    service.load(id.clone()).await.unwrap();
     assert_eq!(*call_count.lock().unwrap(), 1);
 
-    service.execute(&id, Increment { amount: 1 }).await.unwrap();
+    service
+        .execute(id.clone(), Increment { amount: 1 })
+        .await
+        .unwrap();
     assert_eq!(*call_count.lock().unwrap(), 2);
 
-    service.load(&id).await.unwrap();
+    service.load(id.clone()).await.unwrap();
     assert_eq!(*call_count.lock().unwrap(), 3);
 }
 
@@ -248,6 +257,9 @@ async fn factory_context_bonus_applied_in_handler() {
 
     let id = AggregateId::new("counter", "test-1");
     // amount: 2, bonus: 10 → value = 0 + 2 + 10 = 12
-    let entity = service.execute(&id, Increment { amount: 2 }).await.unwrap();
+    let entity = service
+        .execute(id.clone(), Increment { amount: 2 })
+        .await
+        .unwrap();
     assert_eq!(entity.state.value, 12);
 }

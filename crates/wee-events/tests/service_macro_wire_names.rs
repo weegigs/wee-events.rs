@@ -3,7 +3,8 @@
 //! are consumed by the Restate binder (Task 7); here we only prove parse
 //! success and no regression on the core in-process path.
 
-#![allow(dead_code)]
+// handler/loader bodies are async by macro contract; they need not await
+#![allow(clippy::unused_async)]
 
 use wee_events::{AggregateId, Command, Entity, Revision, TypedService};
 
@@ -55,6 +56,6 @@ async fn create_still_works_with_renamed_handler() {
         .with_env(())
         .build();
     let id: AggregateId = "counter:c1".parse().unwrap();
-    let entity = service.execute(&id, Bump).await.unwrap();
+    let entity = service.execute(id.clone(), Bump).await.unwrap();
     assert_eq!(entity.state.value, 0);
 }

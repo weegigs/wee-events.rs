@@ -7,8 +7,8 @@ use std::sync::Mutex;
 
 use futures_util::future::try_join_all;
 
-use crate::database;
 use crate::Error;
+use crate::database;
 use api::{ApiError, DatabaseInfo, TursoPlatformApi};
 use sanitize::{named_database_prefix, sanitize_database_name};
 
@@ -268,7 +268,6 @@ impl<A: TursoPlatformApi, M: PartitionMetadataStore> TursoPlatformProvisionerImp
     }
 }
 
-#[allow(private_bounds)]
 impl<A: TursoPlatformApi, M: PartitionMetadataStore> NamedTargetProvisioner
     for TursoPlatformProvisionerImpl<A, M>
 {
@@ -416,7 +415,6 @@ impl<A: TursoPlatformApi, M: PartitionMetadataStore> NamedTargetProvisioner
     }
 }
 
-#[allow(private_bounds)]
 impl<A: TursoPlatformApi, M: PartitionMetadataStore> TursoProvisioner
     for TursoPlatformProvisionerImpl<A, M>
 {
@@ -424,8 +422,8 @@ impl<A: TursoPlatformApi, M: PartitionMetadataStore> TursoProvisioner
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use api::fake::FakeTursoPlatformApi;
@@ -588,11 +586,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(api
-            .get_database(&sanitize_database_name("Tenant:ACME", "myapp"))
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            api.get_database(&sanitize_database_name("Tenant:ACME", "myapp"))
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -714,9 +713,11 @@ mod tests {
             .await
             .expect_err("missing metadata should fail");
 
-        assert!(error
-            .to_string()
-            .contains("missing logical partition metadata"));
+        assert!(
+            error
+                .to_string()
+                .contains("missing logical partition metadata")
+        );
     }
 
     #[tokio::test]
@@ -742,7 +743,9 @@ mod tests {
 
     #[test]
     fn from_env_returns_error_on_missing_var() {
-        std::env::remove_var("TURSO_ORG");
+        // SAFETY: Rust 2024 marks env mutation unsafe due to multi-thread
+        // hazards. Test process is single-threaded here.
+        unsafe { std::env::remove_var("TURSO_ORG") };
         let result = TursoPlatformConfig::from_env();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("TURSO_ORG"));

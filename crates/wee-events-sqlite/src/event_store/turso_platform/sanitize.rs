@@ -70,8 +70,8 @@ pub(crate) fn named_database_prefix(prefix: &str) -> String {
 }
 
 fn stable_hash_hex(raw: &str) -> String {
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0100_0000_01b3;
 
     let mut hash = FNV_OFFSET;
     for byte in raw.bytes() {

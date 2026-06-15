@@ -11,6 +11,7 @@ pub enum SideEffectFilter {
 }
 
 impl SideEffectFilter {
+    #[must_use]
     pub fn matches(&self, notification: &ExecuteNotification) -> bool {
         match self {
             SideEffectFilter::All => true,
@@ -55,6 +56,7 @@ impl EffectRouter {
         }
     }
 
+    #[must_use]
     pub fn matching_effects(&self, notification: &ExecuteNotification) -> Vec<&str> {
         self.effects
             .iter()
@@ -63,6 +65,7 @@ impl EffectRouter {
             .collect()
     }
 
+    #[must_use]
     pub fn runner_name(&self) -> String {
         names::runner_name(&self.service_name)
     }

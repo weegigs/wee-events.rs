@@ -1,10 +1,10 @@
-use wee_events::{EventData, EventStore as _, PublishOptions, RawEvent};
+use wee_events::{Encoding, EventData, EventStore as _, PublishOptions, RawEvent};
 use wee_events_sqlite::{GlobalStrategy, SqliteEventStore};
 
 fn raw_event(event_type: &str) -> RawEvent {
     RawEvent {
         event_type: event_type.into(),
-        data: EventData::raw("json", b"{}".to_vec()),
+        data: EventData::raw(Encoding::Json, b"{}".to_vec()),
     }
 }
 
@@ -14,10 +14,10 @@ async fn separate_store_instances_observe_each_others_commits() {
     let path = temp_dir.path().join("store.db");
     let aggregate_id = wee_events::AggregateId::new("order", "123");
 
-    let store_a = SqliteEventStore::open_with_strategy(&path, GlobalStrategy)
+    let store_a = SqliteEventStore::open_local(&path, GlobalStrategy)
         .await
         .expect("first store should open");
-    let store_b = SqliteEventStore::open_with_strategy(&path, GlobalStrategy)
+    let store_b = SqliteEventStore::open_local(&path, GlobalStrategy)
         .await
         .expect("second store should open");
 
@@ -58,10 +58,10 @@ async fn stale_revision_conflicts_across_store_instances() {
     let path = temp_dir.path().join("store.db");
     let aggregate_id = wee_events::AggregateId::new("order", "123");
 
-    let store_a = SqliteEventStore::open_with_strategy(&path, GlobalStrategy)
+    let store_a = SqliteEventStore::open_local(&path, GlobalStrategy)
         .await
         .expect("first store should open");
-    let store_b = SqliteEventStore::open_with_strategy(&path, GlobalStrategy)
+    let store_b = SqliteEventStore::open_local(&path, GlobalStrategy)
         .await
         .expect("second store should open");
 
@@ -103,10 +103,7 @@ async fn stale_revision_conflicts_across_store_instances() {
         .expect_err("stale revision should be rejected");
 
     assert!(
-        matches!(
-            error,
-            wee_events_sqlite::Error::WeeEvents(wee_events::Error::RevisionConflict { .. })
-        ),
+        matches!(error, wee_events::Error::RevisionConflict { .. }),
         "unexpected error: {error}"
     );
 }

@@ -16,10 +16,12 @@ pub struct HashedStrategy {
 }
 
 impl HashedStrategy {
+    #[must_use]
     pub fn new(buckets: NonZeroU32) -> Self {
         Self { buckets }
     }
 
+    #[must_use]
     pub fn buckets(&self) -> NonZeroU32 {
         self.buckets
     }
@@ -81,19 +83,45 @@ impl LocalPartitionStrategy for HashedStrategy {
 
 impl SqldNamespacedPartitionStrategy for HashedStrategy {}
 
+/// FNV-1a over the aggregate type's length (4 LE bytes), then the type bytes,
+/// then the key bytes. Length-prefixing the type prevents type/key boundary
+/// collisions: `("foo:", "bar")` and `("foo", ":bar")` must hash differently.
 fn hash_aggregate_id(aggregate_id: &AggregateId) -> u32 {
-    let mut hash = 0x811c9dc5_u32;
+    let mut hash = 0x811c_9dc5_u32;
+    let agg_type = aggregate_id.aggregate_type().as_str().as_bytes();
+    let agg_key = aggregate_id.aggregate_key().as_bytes();
 
-    for byte in aggregate_id
-        .aggregate_type()
-        .as_str()
-        .bytes()
-        .chain([b':'])
-        .chain(aggregate_id.aggregate_key().bytes())
+    let len_prefix = u32::try_from(agg_type.len())
+        .unwrap_or(u32::MAX)
+        .to_le_bytes();
+    for byte in len_prefix
+        .iter()
+        .copied()
+        .chain(agg_type.iter().copied())
+        .chain(agg_key.iter().copied())
     {
         hash ^= u32::from(byte);
         hash = hash.wrapping_mul(0x0100_0193);
     }
 
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn type_key_boundary_does_not_collide() {
+        let a = AggregateId::new("foo", ":bar");
+        let b = AggregateId::new("foo:", "bar");
+        assert_ne!(hash_aggregate_id(&a), hash_aggregate_id(&b));
+    }
+
+    #[test]
+    fn distinct_aggregates_have_distinct_hashes() {
+        let a = AggregateId::new("user", "alice");
+        let b = AggregateId::new("user", "bob");
+        assert_ne!(hash_aggregate_id(&a), hash_aggregate_id(&b));
+    }
 }

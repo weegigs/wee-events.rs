@@ -17,5 +17,4 @@ error[E0599]: no method named `attach_to` found for struct `Registration<Env, En
    | |_________|
    |
    |
-   = note: the method was found for
-           - `Registration<__Store, __Services, wee_events_restate::Ready>`
+   = note: the method was found for `Registration<__Store, __Services, wee_events_restate::Ready>`

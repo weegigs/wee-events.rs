@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use libsql::{Builder, Connection};
 
-use crate::{event_store::DatabaseTarget, Error};
+use crate::{Error, event_store::DatabaseTarget};
 
 const EVENT_STORE_SCHEMA_VERSION: u32 = 2;
 const DOCUMENT_STORE_SCHEMA_VERSION: u32 = 1;
@@ -26,6 +26,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_events_aggregate
     ON events (aggregate_type, aggregate_key, revision);
 ";
 
+//FIXME: hard-commit to json here...
 const DOCUMENTS_DDL: &str = "
 CREATE TABLE IF NOT EXISTS documents (
     collection  TEXT NOT NULL,
@@ -67,9 +68,7 @@ pub(crate) async fn open_event_store_connection(
             let db = Builder::new_remote(url.clone(), auth_token.clone())
                 .build()
                 .await?;
-            let conn = db.connect()?;
-            prepare_remote_connection(&conn).await?;
-            conn
+            db.connect()?
         }
         DatabaseTarget::SqldNamespace {
             url,
@@ -79,9 +78,7 @@ pub(crate) async fn open_event_store_connection(
             let builder =
                 Builder::new_remote(url.clone(), auth_token.clone()).namespace(namespace.clone());
             let db = builder.build().await?;
-            let conn = db.connect()?;
-            prepare_remote_connection(&conn).await?;
-            conn
+            db.connect()?
         }
     };
 
@@ -109,7 +106,7 @@ pub(crate) async fn open_document_store_in_memory_connection() -> Result<Connect
 
 async fn prepare_local_connection(conn: &Connection) -> Result<(), Error> {
     let journal_mode = query_required_string(conn, "PRAGMA journal_mode").await?;
-    if journal_mode != "memory" {
+    if journal_mode != "memory" && journal_mode != "wal" {
         let confirmed = query_required_string(conn, "PRAGMA journal_mode=WAL").await?;
         if confirmed != "wal" {
             return Err(Error::Configuration(format!(
@@ -118,12 +115,8 @@ async fn prepare_local_connection(conn: &Connection) -> Result<(), Error> {
         }
     }
 
-    conn.busy_timeout(Duration::from_millis(5000))?;
+    conn.busy_timeout(Duration::from_secs(30))?; //TODO: const
     conn.execute_batch("PRAGMA foreign_keys=ON;").await?;
-    Ok(())
-}
-
-async fn prepare_remote_connection(_conn: &Connection) -> Result<(), Error> {
     Ok(())
 }
 

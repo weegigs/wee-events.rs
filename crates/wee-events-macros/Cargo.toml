@@ -15,3 +15,6 @@ syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
 convert_case = "0.7"
+
+[lints]
+workspace = true

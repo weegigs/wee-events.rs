@@ -7,19 +7,33 @@ rust-version.workspace = true
 readme.workspace = true
 # TODO: set public repository/homepage/documentation URLs before publishing.
 
+# Same rationale as `wee-events/Cargo.toml`: only the criterion bench below
+# is intended; suppress the implicit libtest bench harness on the lib so
+# `cargo bench -- --save-baseline ...` doesn't fanout into a libtest run.
+[lib]
+bench = false
+
 [features]
 turso = ["dep:reqwest"]
+cbor = ["wee-events/cbor"]
 
 [dependencies]
 wee-events = { path = "../wee-events" }
-libsql = { version = "0.9.29", default-features = false, features = ["core", "remote", "tls"] }
+libsql = { version = "0.9.29", default-features = false, features = [
+  "core",
+  "remote",
+  "tls",
+] }
 ulid = { version = "1", features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 data-encoding = "2"
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], optional = true }
+reqwest = { version = "0.12", features = [
+  "json",
+  "rustls-tls",
+], optional = true }
 futures-util = "0.3"
 
 [dev-dependencies]
@@ -32,3 +46,6 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 [[bench]]
 name = "sqlite_store"
 harness = false
+
+[lints]
+workspace = true

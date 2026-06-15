@@ -4,7 +4,7 @@ use libsql::Connection;
 use tokio::sync::Mutex;
 use wee_events::Revision;
 
-use crate::{database, Error};
+use crate::{Error, database};
 
 /// A projected document stored in the `documents` table.
 #[derive(Debug, Clone)]
@@ -82,7 +82,8 @@ impl DocumentStore {
 
         Ok(Some(Document {
             key,
-            revision: Revision::new(revision),
+            revision: Revision::try_from(revision)
+                .map_err(|e| Error::Internal(format!("document row has invalid revision: {e}")))?,
             data: value,
         }))
     }
@@ -106,7 +107,9 @@ impl DocumentStore {
 
             documents.push(Document {
                 key,
-                revision: Revision::new(revision),
+                revision: Revision::try_from(revision).map_err(|e| {
+                    Error::Internal(format!("document row has invalid revision: {e}"))
+                })?,
                 data: value,
             });
         }

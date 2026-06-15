@@ -2,7 +2,6 @@ use crate::entity::Entity;
 use crate::event::{ChangeSet, DomainEvent};
 use crate::service::ServiceError;
 use crate::store::{EventStore, PublishOptions, RawEvent};
-use crate::EventEncoder;
 
 /// Publishes typed domain events for an aggregate entity.
 pub struct Publisher<'a, Store> {
@@ -23,17 +22,17 @@ where
         &self,
         entity: &Entity<S>,
         events: Vec<E>,
-    ) -> Result<ChangeSet, ServiceError<Store::Error>>
+    ) -> Result<ChangeSet, ServiceError<crate::Error>>
     where
         E: DomainEvent,
     {
-        let encoder = self.store.event_encoder();
+        let encoding = self.store.encoding();
         let raw_events = events
             .iter()
             .map(|event| {
                 Ok(RawEvent {
                     event_type: event.event_type(),
-                    data: encoder.serialize(event)?,
+                    data: encoding.encode(event)?,
                 })
             })
             .collect::<Result<Vec<_>, crate::EncodeError>>()?;

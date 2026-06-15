@@ -1,3 +1,6 @@
+//! Explicit `impl Future + Send` on trait impls is deliberate; not desugarable.
+#![allow(clippy::manual_async_fn)]
+
 use std::convert::Infallible;
 use std::future::Future;
 
@@ -87,10 +90,9 @@ impl wee_events::__private::DispatchCommand<Increment> for TypedCounterService {
 
     fn dispatch_command(
         &self,
-        id: &AggregateId,
+        id: AggregateId,
         cmd: Increment,
     ) -> impl Future<Output = Result<Entity<Counter>, Self::Error>> + Send {
-        let id = id.clone();
         async move {
             Ok(Entity {
                 aggregate_id: id,
@@ -109,9 +111,8 @@ impl TypedService<Counter> for TypedCounterService {
 
     fn load(
         &self,
-        id: &AggregateId,
+        id: AggregateId,
     ) -> impl Future<Output = Result<Entity<Counter>, Self::Error>> + Send {
-        let id = id.clone();
         async move {
             Ok(Entity {
                 aggregate_id: id,
@@ -127,7 +128,7 @@ impl TypedService<Counter> for TypedCounterService {
 async fn typed_service_loads_state() {
     let svc = TypedCounterService;
     let id: AggregateId = "counter:test-1".parse().unwrap();
-    let entity = svc.load(&id).await.unwrap();
+    let entity = svc.load(id.clone()).await.unwrap();
     assert_eq!(entity.state.value, 0);
 }
 
@@ -135,6 +136,9 @@ async fn typed_service_loads_state() {
 async fn typed_service_executes_registered_command() {
     let svc = TypedCounterService;
     let id: AggregateId = "counter:test-1".parse().unwrap();
-    let entity = svc.execute(&id, Increment { amount: 5 }).await.unwrap();
+    let entity = svc
+        .execute(id.clone(), Increment { amount: 5 })
+        .await
+        .unwrap();
     assert_eq!(entity.state.value, 5);
 }

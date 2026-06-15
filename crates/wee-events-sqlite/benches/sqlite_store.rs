@@ -1,4 +1,4 @@
-//! Comprehensive performance benchmarks for all SQLite store variants and
+//! Comprehensive performance benchmarks for all `SQLite` store variants and
 //! partitioning strategies.
 
 use std::collections::HashSet;
@@ -7,12 +7,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use criterion::{criterion_main, Criterion};
+use criterion::{Criterion, criterion_main};
 use reqwest::StatusCode;
 use testcontainers::{
+    ContainerAsync, GenericImage, ImageExt,
     core::{IntoContainerPort, WaitFor},
     runners::AsyncRunner,
-    ContainerAsync, GenericImage, ImageExt,
 };
 use wee_events::{
     Aggregate, AggregateId, ChangeSet, EventStore as EventStoreTrait, PublishOptions, RawEvent,
@@ -36,9 +36,7 @@ struct TempStore<T> {
 }
 
 impl<T: EventStoreTrait> EventStoreTrait for TempStore<T> {
-    type Error = T::Error;
-
-    async fn load(&self, id: &AggregateId) -> Result<Aggregate, Self::Error> {
+    async fn load(&self, id: &AggregateId) -> Result<Aggregate, wee_events::Error> {
         self.store.load(id).await
     }
 
@@ -47,7 +45,7 @@ impl<T: EventStoreTrait> EventStoreTrait for TempStore<T> {
         aggregate_id: &AggregateId,
         options: PublishOptions,
         events: Vec<RawEvent>,
-    ) -> Result<ChangeSet, Self::Error> {
+    ) -> Result<ChangeSet, wee_events::Error> {
         self.store.publish(aggregate_id, options, events).await
     }
 }
@@ -101,13 +99,7 @@ where
 {
     TempStore {
         _guard: TestStoreGuard::None,
-        store: SqliteEventStore::builder()
-            .in_memory()
-            .strategy(strategy)
-            .writer(wee_events::JsonEncoder)
-            .open()
-            .await
-            .unwrap(),
+        store: SqliteEventStore::open_in_memory(strategy).await.unwrap(),
     }
 }
 
@@ -116,11 +108,7 @@ where
     S: LocalPartitionStrategy + LocalStorePath,
 {
     let temp_dir = tempfile::tempdir().unwrap();
-    let store = SqliteEventStore::builder()
-        .local(S::local_store_path(&temp_dir))
-        .strategy(strategy)
-        .writer(wee_events::JsonEncoder)
-        .open()
+    let store = SqliteEventStore::open_local(S::local_store_path(&temp_dir), strategy)
         .await
         .unwrap();
 
@@ -322,18 +310,13 @@ async fn open_sqld_default_store_with_retry(
     let deadline = Instant::now() + Duration::from_secs(20);
 
     loop {
-        match SqliteEventStore::builder()
-            .sqld_default(provisioner.clone())
-            .strategy(strategy)
-            .writer(wee_events::JsonEncoder)
-            .open()
-            .await
-        {
+        match SqliteEventStore::open_sqld_default(provisioner.clone(), strategy).await {
             Ok(store) => return store,
             Err(error) => {
-                if Instant::now() >= deadline {
-                    panic!("sqld default did not become ready in time: {error}");
-                }
+                assert!(
+                    Instant::now() < deadline,
+                    "sqld default did not become ready in time: {error}"
+                );
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
         }
@@ -350,18 +333,13 @@ where
     let deadline = Instant::now() + Duration::from_secs(20);
 
     loop {
-        match SqliteEventStore::builder()
-            .sqld_namespaced(provisioner.clone())
-            .strategy(strategy.clone())
-            .writer(wee_events::JsonEncoder)
-            .open()
-            .await
-        {
+        match SqliteEventStore::open_sqld_namespaced(provisioner.clone(), strategy.clone()).await {
             Ok(store) => return store,
             Err(error) => {
-                if Instant::now() >= deadline {
-                    panic!("sqld did not become ready in time: {error}");
-                }
+                assert!(
+                    Instant::now() < deadline,
+                    "sqld did not become ready in time: {error}"
+                );
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
         }
@@ -380,9 +358,10 @@ where
         match store.load(&probe).await {
             Ok(_) => return,
             Err(error) => {
-                if Instant::now() >= deadline {
-                    panic!("remote sqld did not become ready in time: {error}");
-                }
+                assert!(
+                    Instant::now() < deadline,
+                    "remote sqld did not become ready in time: {error}"
+                );
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
         }
@@ -579,13 +558,12 @@ fn turso_benchmarks(c: &mut Criterion) {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let store = rt.block_on(async {
-        let store = SqliteEventStore::builder()
-            .turso(FixedRemoteTargetProvisioner { url, auth_token })
-            .strategy(GlobalStrategy)
-            .writer(wee_events::JsonEncoder)
-            .open()
-            .await
-            .unwrap();
+        let store = SqliteEventStore::open_turso(
+            FixedRemoteTargetProvisioner { url, auth_token },
+            GlobalStrategy,
+        )
+        .await
+        .unwrap();
         TempStore {
             _guard: TestStoreGuard::None,
             store,

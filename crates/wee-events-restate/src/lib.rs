@@ -25,6 +25,7 @@ pub struct Needs<Requirement, Tail> {
 }
 
 impl<Requirement, Tail> Needs<Requirement, Tail> {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             _marker: PhantomData,
@@ -108,6 +109,7 @@ pub mod __private {
     pub type AttachEffect =
         Box<dyn FnOnce(restate_sdk::endpoint::Builder) -> restate_sdk::endpoint::Builder + Send>;
 
+    #[must_use]
     pub fn attach_effects_to(
         mut builder: restate_sdk::endpoint::Builder,
         effects: Vec<AttachEffect>,
